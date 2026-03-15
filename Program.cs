@@ -236,20 +236,21 @@ static async Task RunInteractiveLoopAsync(
         {
             ShowEntry(keepass, viewedEntry);
             Console.WriteLine("──────────────────────────────────────────────");
-            Console.WriteLine("  add <key> with value <val>  Add or update a field");
-            Console.WriteLine("  copy <field>                Copy a field to clipboard (clears in 60 s)");
-            Console.WriteLine("  update                      Edit fields interactively");
-            Console.WriteLine("  delete                      Move to recycle bin");
+            Console.WriteLine("  add/update/modify <key> with value <val>   Set a field (value is masked)");
+            Console.WriteLine("  modify <key> to value <val>                Alias for above");
+            Console.WriteLine("  copy <field>               Copy a field to clipboard (clears in 60 s)");
+            Console.WriteLine("  update                     Edit fields interactively");
+            Console.WriteLine("  delete / remove            Move to recycle bin");
             Console.WriteLine("  back                        Return to folder");
             Console.WriteLine("  exit                        Exit");
         }
         else
         {
             Console.WriteLine("──────────────────────────────────────────────");
-            Console.WriteLine("  add <name>                  Create a new entry");
-            Console.WriteLine("  add folder <name>           Create a subfolder");
-            Console.WriteLine("  update <name>               Edit an entry");
-            Console.WriteLine("  delete <name>               Move entry to recycle bin");
+            Console.WriteLine("  add / create <name>         Create a new entry");
+            Console.WriteLine("  add / create folder <name>  Create a subfolder");
+            Console.WriteLine("  update / modify <name>      Edit an entry");
+            Console.WriteLine("  delete / remove <name>      Move entry to recycle bin");
             Console.WriteLine("  search <term>               Search entries");
             Console.WriteLine("  copy <field> from <name>    Copy field to clipboard (clears in 60 s)");
             Console.WriteLine("  list                        List contents of this folder");
@@ -268,16 +269,52 @@ static async Task RunInteractiveLoopAsync(
     // History of commands entered this session (oldest → newest).
     var history = new List<string>();
 
+    // Returns the buffer index where the secret value starts (masking begins),
+    // or -1 if the current input does not have a maskable value yet.
+    // Applies to:  add <key> with value <val>
+    //              insert <key> with value <val>
+    //              update <key> with value <val>
+    static int ValueStartIndex(string buf)
+    {
+        string lo = buf.ToLowerInvariant();
+
+        // "add/create/insert/update <key> with value <val>"
+        if (lo.StartsWith("add ")    || lo.StartsWith("create ") ||
+            lo.StartsWith("insert ") || lo.StartsWith("update "))
+        {
+            int idx = lo.IndexOf(" with value ");
+            if (idx >= 0)
+            {
+                int start = idx + " with value ".Length;
+                return buf.Length > start ? start : -1;
+            }
+        }
+
+        // "modify <key> to value <val>"
+        if (lo.StartsWith("modify "))
+        {
+            int idx = lo.IndexOf(" to value ");
+            if (idx >= 0)
+            {
+                int start = idx + " to value ".Length;
+                return buf.Length > start ? start : -1;
+            }
+        }
+
+        return -1;
+    }
+
     // Reads a full line preserving original case.
     // • Ctrl+L  — clear screen and redraw menu
     // • ↑ / ↓   — navigate command history (shell-style)
+    // • add/insert/update … with value <val> — masks the value as it is typed
     string ReadChoice()
     {
         var    sb         = new System.Text.StringBuilder();
         int    histPos    = history.Count; // past-the-end = "live" input slot
         string savedInput = "";            // live input saved while navigating up
 
-        // Erase whatever is on the current input line and write newText instead.
+        // Erase current line and write newText, masking the value part if present.
         void ReplaceText(string newText)
         {
             int len = sb.Length;
@@ -289,7 +326,17 @@ static async Task RunInteractiveLoopAsync(
             }
             sb.Clear();
             sb.Append(newText);
-            Console.Write(newText);
+
+            int vs = ValueStartIndex(newText);
+            if (vs >= 0)
+            {
+                Console.Write(newText[..vs]);                       // plain prefix
+                Console.Write(new string('*', newText.Length - vs)); // masked value
+            }
+            else
+            {
+                Console.Write(newText);
+            }
         }
 
         while (true)
@@ -343,7 +390,12 @@ static async Task RunInteractiveLoopAsync(
                 continue;
             }
 
-            if (k.KeyChar != '\0') { sb.Append(k.KeyChar); Console.Write(k.KeyChar); }
+            if (k.KeyChar != '\0')
+            {
+                sb.Append(k.KeyChar);
+                // Echo '*' once the cursor is inside the value portion, real char otherwise.
+                Console.Write(ValueStartIndex(sb.ToString()) >= 0 ? '*' : k.KeyChar);
+            }
         }
     }
 
@@ -414,14 +466,29 @@ static async Task RunInteractiveLoopAsync(
         // ── Entry view ────────────────────────────────────────────────────────
         if (viewedEntry is not null)
         {
-            // "add/insert <key> with value <value>"  — key and value preserve original case
-            if ((cmdLower.StartsWith("add ") || cmdLower.StartsWith("insert "))
-                && cmdLower.Contains(" with value "))
+            // "add/create/insert/update <key> with value <val>"
+            // "modify <key> to value <val>"
+            bool isWithValue = (cmdLower.StartsWith("add ")    || cmdLower.StartsWith("create ") ||
+                                 cmdLower.StartsWith("insert ") || cmdLower.StartsWith("update "))
+                               && cmdLower.Contains(" with value ");
+            bool isModify    = cmdLower.StartsWith("modify ") && cmdLower.Contains(" to value ");
+
+            if (isWithValue || isModify)
             {
-                int    prefixLen     = cmdLower.StartsWith("add ") ? 4 : 7; // "add " or "insert "
-                int    withValueIdx  = cmdLower.IndexOf(" with value ");
-                string key           = cmd[prefixLen..withValueIdx].Trim();
-                string value         = cmd[(withValueIdx + " with value ".Length)..].Trim();
+                string key, value;
+                if (isModify)
+                {
+                    int sep = cmdLower.IndexOf(" to value ");
+                    key   = cmd["modify ".Length..sep].Trim();
+                    value = cmd[(sep + " to value ".Length)..].Trim();
+                }
+                else
+                {
+                    int prefixLen   = cmdLower.StartsWith("add ") ? 4 : 7; // "add "=4, others=7
+                    int withValIdx  = cmdLower.IndexOf(" with value ");
+                    key   = cmd[prefixLen..withValIdx].Trim();
+                    value = cmd[(withValIdx + " with value ".Length)..].Trim();
+                }
 
                 if (string.IsNullOrEmpty(key))
                     Console.WriteLine("  Key cannot be empty.  e.g.: add password with value S3cr3t");
@@ -481,12 +548,13 @@ static async Task RunInteractiveLoopAsync(
 
         // ── Folder view prefix commands ───────────────────────────────────────
 
-        // "add folder [<name>]" / "folder [<name>]"
-        if (cmdLower == "add folder" || cmdLower == "folder" || cmdLower.StartsWith("add folder "))
+        // "add/create folder [<name>]" / "folder [<name>]"
+        if (cmdLower == "add folder"    || cmdLower == "create folder" || cmdLower == "folder" ||
+            cmdLower.StartsWith("add folder ") || cmdLower.StartsWith("create folder "))
         {
-            string name = cmdLower.StartsWith("add folder ")
-                ? cmd["add folder ".Length..].Trim()
-                : ConsoleHelper.Prompt("\nFolder name").Trim();
+            string name = cmdLower.StartsWith("add folder ")    ? cmd["add folder ".Length..].Trim()
+                        : cmdLower.StartsWith("create folder ") ? cmd["create folder ".Length..].Trim()
+                        : ConsoleHelper.Prompt("\nFolder name").Trim();
             if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Folder name cannot be empty."); continue; }
             if (keepass.CreateGroup(currentGroup, name))
                 Console.WriteLine($"  ✓ Folder '{name}' created.");
@@ -496,12 +564,14 @@ static async Task RunInteractiveLoopAsync(
             continue;
         }
 
-        // "add entry <name>" / "new entry <name>" → quick-create entry, navigate to it
-        if (cmdLower.StartsWith("add entry ") || cmdLower.StartsWith("new entry "))
+        // "add/create/new entry <name>" → quick-create entry, navigate to it
+        if (cmdLower.StartsWith("add entry ")    ||
+            cmdLower.StartsWith("new entry ")    ||
+            cmdLower.StartsWith("create entry "))
         {
-            string name = cmdLower.StartsWith("add entry ")
-                ? cmd["add entry ".Length..].Trim()
-                : cmd["new entry ".Length..].Trim();
+            string name = cmdLower.StartsWith("add entry ")    ? cmd["add entry ".Length..].Trim()
+                        : cmdLower.StartsWith("new entry ")    ? cmd["new entry ".Length..].Trim()
+                        :                                        cmd["create entry ".Length..].Trim();
             if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Entry name cannot be empty."); continue; }
             viewedEntry = keepass.AddQuickEntry(currentGroup, name);
             Console.WriteLine($"  ✓ Entry '{name}' created. Use 'add <key> with value <val>' to fill in fields.");
@@ -509,12 +579,12 @@ static async Task RunInteractiveLoopAsync(
             continue;
         }
 
-        // "add <name>" / "new <name>" — shorthand quick-create (caught after "add folder" / "add entry")
-        if (cmdLower.StartsWith("add ") || cmdLower.StartsWith("new "))
+        // "add/new/create <name>" — shorthand quick-create
+        if (cmdLower.StartsWith("add ") || cmdLower.StartsWith("new ") || cmdLower.StartsWith("create "))
         {
-            string name = cmdLower.StartsWith("add ")
-                ? cmd["add ".Length..].Trim()
-                : cmd["new ".Length..].Trim();
+            string name = cmdLower.StartsWith("add ")    ? cmd["add ".Length..].Trim()
+                        : cmdLower.StartsWith("new ")    ? cmd["new ".Length..].Trim()
+                        :                                  cmd["create ".Length..].Trim();
             if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Entry name cannot be empty."); continue; }
             viewedEntry = keepass.AddQuickEntry(currentGroup, name);
             Console.WriteLine($"  ✓ Entry '{name}' created. Use 'add <key> with value <val>' to fill in fields.");
@@ -554,13 +624,23 @@ static async Task RunInteractiveLoopAsync(
             continue;
         }
 
-        // "update/edit [<name>]"
-        if (cmdLower == "update" || cmdLower == "edit" ||
-            cmdLower.StartsWith("update ") || cmdLower.StartsWith("edit "))
+        // "update/edit/modify [<name>]"
+        if (cmdLower == "update" || cmdLower == "edit" || cmdLower == "modify" ||
+            cmdLower.StartsWith("update ") || cmdLower.StartsWith("edit ") || cmdLower.StartsWith("modify "))
         {
+            // Field-set forms belong in entry view — guide the user.
+            if (cmdLower.Contains(" with value ") || cmdLower.Contains(" to value "))
+            {
+                Console.WriteLine("  Open an entry first, then use the field-set command.");
+                Console.WriteLine("  e.g.: select gmail  →  update password with value S3cr3t");
+                Console.WriteLine("  e.g.: select gmail  →  modify password to value S3cr3t");
+                continue;
+            }
+
             string prefix = "";
             if      (cmdLower.StartsWith("update ")) prefix = cmd["update ".Length..].Trim();
             else if (cmdLower.StartsWith("edit "))   prefix = cmd["edit ".Length..].Trim();
+            else if (cmdLower.StartsWith("modify ")) prefix = cmd["modify ".Length..].Trim();
 
             if (string.IsNullOrEmpty(prefix))
             {
@@ -612,7 +692,7 @@ static async Task RunInteractiveLoopAsync(
         // ── Bare commands (no arguments) ──────────────────────────────────────
         switch (cmdLower)
         {
-            case "add":
+            case "add": case "create":
                 AddEntry(keepass, currentGroup);
                 if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
                 break;
