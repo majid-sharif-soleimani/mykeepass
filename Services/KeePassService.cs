@@ -430,11 +430,13 @@ public sealed class KeePassService : IDisposable
     {
         if (!_modified) return null;
 
-        var ms   = new MemoryStream();
+        // KdbxFile.Save() closes the stream it writes to, so we capture the bytes
+        // via ToArray() (which works even on a closed MemoryStream) and hand back a
+        // fresh, readable stream positioned at 0.
+        var temp = new MemoryStream();
         var kdbx = new KdbxFile(_db);
-        kdbx.Save(ms, pgDataSource: null, KdbxFormat.Default, slLogger: null);
-        ms.Position = 0;
-        return ms;
+        kdbx.Save(temp, pgDataSource: null, KdbxFormat.Default, slLogger: null);
+        return new MemoryStream(temp.ToArray());
     }
 
     public bool IsModified => _modified;
