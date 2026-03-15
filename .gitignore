@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+
+# OAuth2 client secrets — NEVER commit to source control
+credentials.json
+
+# Local database config (contains your database filename/path)
+appsettings.json
+
+# OAuth2 cached refresh token
+TokenStore/
+
+# User-specific Visual Studio settings
+.vs/
+*.user
+
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

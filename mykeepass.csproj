@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>mykeepass</RootNamespace>
+    <AssemblyName>mykeepass</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Google OAuth2 authentication -->
+    <PackageReference Include="Google.Apis.Auth"     Version="1.68.0"      />
+    <!-- Google Drive v3 REST client -->
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.68.0.3544" />
+    <!-- KeePass 2 (.kdbx) database library — .NET Standard 2.1 port, works on .NET 8 -->
+    <PackageReference Include="KeePassLib.Standard"   Version="2.57.1"      />
+    <!-- Cross-platform clipboard read/write for console apps -->
+    <PackageReference Include="TextCopy"              Version="6.2.1"       />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copy config to output dir; never commit credentials.json to source control -->
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
