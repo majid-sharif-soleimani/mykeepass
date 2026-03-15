@@ -7,6 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>mykeepass</RootNamespace>
     <AssemblyName>mykeepass</AssemblyName>
+    <!-- Prevent the SDK from recursing into the sibling test project directory -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);mykeepass.Tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,6 +20,25 @@
     <PackageReference Include="KeePassLib.Standard"   Version="2.57.1"      />
     <!-- Cross-platform clipboard read/write for console apps -->
     <PackageReference Include="TextCopy"              Version="6.2.1"       />
+    <!-- ANTLR4 runtime for grammar-based command parsing -->
+    <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
+    <!-- ANTLR4 build-time code generation — no external Java required -->
+    <PackageReference Include="Antlr4BuildTasks"        Version="12.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lexer grammar (modes allowed in pure lexer grammars) -->
+    <Antlr4 Include="Parsing\MyKeePassLexer.g4">
+      <Package>mykeepass.Parsing</Package>
+      <Visitor>false</Visitor>
+      <Listener>false</Listener>
+    </Antlr4>
+    <!-- Parser grammar (references lexer tokens via tokenVocab) -->
+    <Antlr4 Include="Parsing\MyKeePassParser.g4">
+      <Package>mykeepass.Parsing</Package>
+      <Visitor>true</Visitor>
+      <Listener>false</Listener>
+    </Antlr4>
   </ItemGroup>
 
   <ItemGroup>

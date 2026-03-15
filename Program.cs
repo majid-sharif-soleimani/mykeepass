@@ -16,8 +16,10 @@
 
 using System.Text.Json;
 using KeePassLib;
+using mykeepass;
 using mykeepass.Helpers;
 using mykeepass.Models;
+using mykeepass.Parsing;
 using mykeepass.Services;
 
 // ─── Startup banner ───────────────────────────────────────────────────────────
@@ -199,10 +201,9 @@ static async Task RunInteractiveLoopAsync(
     string             fileId,
     string             fileName)
 {
-    PwGroup  currentGroup = keepass.RootGroup;
-    PwEntry? viewedEntry  = null;
+    var executor = new CommandExecutor(keepass, drive, fileId, fileName);
 
-    static string GroupPath(PwGroup group)
+    string GroupPath(PwGroup group)
     {
         var parts = new List<string>();
         PwGroup? g = group;
@@ -218,11 +219,11 @@ static async Task RunInteractiveLoopAsync(
 
     string Breadcrumb()
     {
-        string groupCrumb = GroupPath(currentGroup);
+        string groupCrumb = GroupPath(executor.CurrentGroup);
         if (string.IsNullOrEmpty(groupCrumb))
-            groupCrumb = $"▷ {currentGroup.Name}";
-        if (viewedEntry is null) return groupCrumb;
-        string title = viewedEntry.Strings.ReadSafe(PwDefs.TitleField);
+            groupCrumb = $"▷ {executor.CurrentGroup.Name}";
+        if (executor.ViewedEntry is null) return groupCrumb;
+        string title = executor.ViewedEntry.Strings.ReadSafe(PwDefs.TitleField);
         return $"{groupCrumb} > ◇ {title}";
     }
 
@@ -232,30 +233,43 @@ static async Task RunInteractiveLoopAsync(
         Console.WriteLine("──────────────────────────────────────────────");
         Console.WriteLine($"  {Breadcrumb()}");
 
-        if (viewedEntry is not null)
+        if (executor.ViewedEntry is not null)
         {
-            ShowEntry(keepass, viewedEntry);
+            CommandExecutor.ShowEntry(keepass, executor.ViewedEntry);
             Console.WriteLine("──────────────────────────────────────────────");
-            Console.WriteLine("  add/update/modify <key> with value <val>   Set a field (value is masked)");
-            Console.WriteLine("  modify <key> to value <val>                Alias for above");
+            Console.WriteLine("  set <field> to <val>                        Set a field value (masked)");
+            Console.WriteLine("  modify <field> to <val>                     Alias for set");
+            Console.WriteLine("  add/update [key] <field> with value <val>   Set a field value (masked)");
+            Console.WriteLine("  add/update [key] <field> = <val>            Shorthand (masked)");
+            Console.WriteLine("  delete <field>             Remove a custom field");
+            Console.WriteLine("  rename to <new-title>      Rename this entry");
+            Console.WriteLine("  move to <folder>           Move this entry to another folder");
             Console.WriteLine("  copy <field>               Copy a field to clipboard (clears in 60 s)");
-            Console.WriteLine("  update                     Edit fields interactively");
-            Console.WriteLine("  delete / remove            Move to recycle bin");
-            Console.WriteLine("  back                        Return to folder");
-            Console.WriteLine("  exit                        Exit");
+            Console.WriteLine("  update                     Edit all fields interactively");
+            Console.WriteLine("  delete / remove            Move entry to recycle bin");
+            Console.WriteLine("  save                       Upload database to Google Drive now");
+            Console.WriteLine("  back                       Return to folder");
+            Console.WriteLine("  exit                       Exit (offers upload if modified)");
         }
         else
         {
             Console.WriteLine("──────────────────────────────────────────────");
-            Console.WriteLine("  add / create <name>         Create a new entry");
-            Console.WriteLine("  add / create folder <name>  Create a subfolder");
-            Console.WriteLine("  update / modify <name>      Edit an entry");
-            Console.WriteLine("  delete / remove <name>      Move entry to recycle bin");
-            Console.WriteLine("  search <term>               Search entries");
-            Console.WriteLine("  copy <field> from <name>    Copy field to clipboard (clears in 60 s)");
-            Console.WriteLine("  list                        List contents of this folder");
-            Console.WriteLine("  back                        Go to parent folder");
-            Console.WriteLine("  exit                        Exit");
+            Console.WriteLine("  add / create <name>              Create a new entry");
+            Console.WriteLine("  add / create folder <name>       Create a subfolder");
+            Console.WriteLine("  update / modify <name>           Edit an entry");
+            Console.WriteLine("  delete / remove <name>           Move entry to recycle bin");
+            Console.WriteLine("  delete / remove folder <name>    Move subfolder to recycle bin");
+            Console.WriteLine("  rename <name> to <new>           Rename an entry or folder");
+            Console.WriteLine("  rename folder <name> to <new>    Rename a folder explicitly");
+            Console.WriteLine("  rename to <new>                  Rename the current folder");
+            Console.WriteLine("  move <name> to <folder>          Move an entry or folder");
+            Console.WriteLine("  move folder <name> to <folder>   Move a subfolder explicitly");
+            Console.WriteLine("  search <term>                    Search entries");
+            Console.WriteLine("  copy <field> from <name>         Copy field to clipboard (clears in 60 s)");
+            Console.WriteLine("  list                             List contents of this folder");
+            Console.WriteLine("  save                             Upload database to Google Drive now");
+            Console.WriteLine("  back                             Go to parent folder");
+            Console.WriteLine("  exit                             Exit (offers upload if modified)");
             Console.WriteLine();
             Console.WriteLine("  select <name>               Open folder or entry (auto-detect)");
             Console.WriteLine("  select folder <name>        Navigate into a subfolder");
@@ -271,33 +285,48 @@ static async Task RunInteractiveLoopAsync(
 
     // Returns the buffer index where the secret value starts (masking begins),
     // or -1 if the current input does not have a maskable value yet.
-    // Applies to:  add <key> with value <val>
-    //              insert <key> with value <val>
-    //              update <key> with value <val>
+    //
+    // Handled forms:
+    //   add/create/insert/update [key] <field> with value <val>
+    //   add/create/insert/update [key] <field> = <val>
+    //   set   [key] <field> to <val>
+    //   modify [key] <field> to <val>
     static int ValueStartIndex(string buf)
     {
         string lo = buf.ToLowerInvariant();
 
-        // "add/create/insert/update <key> with value <val>"
         if (lo.StartsWith("add ")    || lo.StartsWith("create ") ||
             lo.StartsWith("insert ") || lo.StartsWith("update "))
         {
-            int idx = lo.IndexOf(" with value ");
-            if (idx >= 0)
+            // "with value" form: mask starts after the trailing space of "with value "
+            int wvIdx = lo.IndexOf(" with value ");
+            if (wvIdx >= 0)
             {
-                int start = idx + " with value ".Length;
+                int start = wvIdx + " with value ".Length;
+                if (buf.Length <= start) return -1;
+                if (lo[start..].StartsWith("from ")) return -1;
+                return start;
+            }
+
+            // "= val" form: mask starts after " = " (spaces required around =)
+            int eqIdx = lo.IndexOf(" = ");
+            if (eqIdx >= 0)
+            {
+                int start = eqIdx + " = ".Length;
                 return buf.Length > start ? start : -1;
             }
         }
 
-        // "modify <key> to value <val>"
-        if (lo.StartsWith("modify "))
+        // "set/modify [key] <field> to <val>" — mask starts after " to "
+        if (lo.StartsWith("set ") || lo.StartsWith("modify "))
         {
-            int idx = lo.IndexOf(" to value ");
+            int idx = lo.IndexOf(" to ");
             if (idx >= 0)
             {
-                int start = idx + " to value ".Length;
-                return buf.Length > start ? start : -1;
+                int start = idx + " to ".Length;
+                if (buf.Length <= start) return -1;
+                if (lo[start..].StartsWith("value from ")) return -1;
+                return start;
             }
         }
 
@@ -307,30 +336,49 @@ static async Task RunInteractiveLoopAsync(
     // Reads a full line preserving original case.
     // • Ctrl+L  — clear screen and redraw menu
     // • ↑ / ↓   — navigate command history (shell-style)
+    // • ← / →   — move cursor within the line
     // • add/insert/update … with value <val> — masks the value as it is typed
     string ReadChoice()
     {
         var    sb         = new System.Text.StringBuilder();
+        int    cursorPos  = 0;             // screen column of the cursor within the input
         int    histPos    = history.Count; // past-the-end = "live" input slot
         string savedInput = "";            // live input saved while navigating up
+
+        // Render sb[from..] with masking applied (vs = ValueStartIndex result, -1 = none).
+        // Leaves the console cursor at the right edge (column sb.Length).
+        void RenderTail(int from, int vs)
+        {
+            if (from >= sb.Length) return;
+            if (vs < 0)
+                Console.Write(sb.ToString()[from..]);
+            else if (from >= vs)
+                Console.Write(new string('*', sb.Length - from));
+            else
+            {
+                Console.Write(sb.ToString()[from..vs]);
+                Console.Write(new string('*', sb.Length - vs));
+            }
+        }
 
         // Erase current line and write newText, masking the value part if present.
         void ReplaceText(string newText)
         {
-            int len = sb.Length;
-            if (len > 0)
+            // Move to column 0, then erase old content.
+            if (cursorPos > 0) Console.Write(new string('\b', cursorPos));
+            if (sb.Length > 0)
             {
-                Console.Write(new string('\b', len));
-                Console.Write(new string(' ',  len));
-                Console.Write(new string('\b', len));
+                Console.Write(new string(' ',  sb.Length));
+                Console.Write(new string('\b', sb.Length));
             }
             sb.Clear();
             sb.Append(newText);
+            cursorPos = newText.Length;   // cursor at end after replace
 
             int vs = ValueStartIndex(newText);
             if (vs >= 0)
             {
-                Console.Write(newText[..vs]);                       // plain prefix
+                Console.Write(newText[..vs]);                        // plain prefix
                 Console.Write(new string('*', newText.Length - vs)); // masked value
             }
             else
@@ -348,6 +396,7 @@ static async Task RunInteractiveLoopAsync(
                 Console.Clear();
                 PrintMenu();
                 sb.Clear();
+                cursorPos  = 0;
                 histPos    = history.Count;
                 savedInput = "";
                 continue;
@@ -371,6 +420,23 @@ static async Task RunInteractiveLoopAsync(
                 continue;
             }
 
+            if (k.Key == ConsoleKey.LeftArrow)
+            {
+                if (cursorPos > 0) { Console.Write('\b'); cursorPos--; }
+                continue;
+            }
+
+            if (k.Key == ConsoleKey.RightArrow)
+            {
+                if (cursorPos < sb.Length)
+                {
+                    int vs = ValueStartIndex(sb.ToString());
+                    Console.Write(vs >= 0 && cursorPos >= vs ? '*' : sb[cursorPos]);
+                    cursorPos++;
+                }
+                continue;
+            }
+
             if (k.Key == ConsoleKey.Enter)
             {
                 Console.WriteLine();
@@ -381,20 +447,83 @@ static async Task RunInteractiveLoopAsync(
                     history.Add(result);
                 histPos    = history.Count;
                 savedInput = "";
+                cursorPos  = 0;
                 return result;
             }
 
             if (k.Key == ConsoleKey.Backspace)
             {
-                if (sb.Length > 0) { sb.Remove(sb.Length - 1, 1); Console.Write("\b \b"); }
+                if (cursorPos > 0)
+                {
+                    int vsBeforeBs   = ValueStartIndex(sb.ToString());
+                    int oldCursorPos = cursorPos;
+                    sb.Remove(cursorPos - 1, 1);
+                    cursorPos--;
+                    int vsAfterBs = ValueStartIndex(sb.ToString());
+
+                    if ((vsBeforeBs >= 0) == (vsAfterBs >= 0))
+                    {
+                        // State unchanged — step back, re-render tail, erase last old char.
+                        Console.Write('\b');
+                        RenderTail(cursorPos, vsAfterBs);
+                        Console.Write(' ');   // erase the extra character at old end
+                        Console.Write(new string('\b', sb.Length - cursorPos + 1));
+                    }
+                    else
+                    {
+                        // State changed — full redraw.
+                        Console.Write(new string('\b', oldCursorPos));
+                        Console.Write(new string(' ',  sb.Length + 1));
+                        Console.Write(new string('\b', sb.Length + 1));
+                        string full = sb.ToString();
+                        if (vsAfterBs >= 0) { Console.Write(full[..vsAfterBs]); Console.Write(new string('*', full.Length - vsAfterBs)); }
+                        else                { Console.Write(full); }
+                        int moveBack = sb.Length - cursorPos;
+                        if (moveBack > 0) Console.Write(new string('\b', moveBack));
+                    }
+                }
                 continue;
             }
 
             if (k.KeyChar != '\0')
             {
-                sb.Append(k.KeyChar);
-                // Echo '*' once the cursor is inside the value portion, real char otherwise.
-                Console.Write(ValueStartIndex(sb.ToString()) >= 0 ? '*' : k.KeyChar);
+                int vsBefore     = ValueStartIndex(sb.ToString());
+                int oldCursorPos = cursorPos;
+                sb.Insert(cursorPos, k.KeyChar);
+                cursorPos++;
+                int vsAfter = ValueStartIndex(sb.ToString());
+
+                if (vsBefore < 0 && vsAfter < 0)
+                {
+                    // All plain — write char then re-render suffix.
+                    Console.Write(k.KeyChar);
+                    RenderTail(cursorPos, -1);
+                    int moveBack = sb.Length - cursorPos;
+                    if (moveBack > 0) Console.Write(new string('\b', moveBack));
+                }
+                else if (vsBefore >= 0 && vsAfter >= 0)
+                {
+                    // Still masking — write '*' then re-render suffix as '*'.
+                    Console.Write('*');
+                    int tailLen = sb.Length - cursorPos;
+                    if (tailLen > 0)
+                    {
+                        Console.Write(new string('*', tailLen));
+                        Console.Write(new string('\b', tailLen));
+                    }
+                }
+                else
+                {
+                    // Masking state flipped — full redraw.
+                    Console.Write(new string('\b', oldCursorPos));
+                    Console.Write(new string(' ',  sb.Length));
+                    Console.Write(new string('\b', sb.Length));
+                    string full = sb.ToString();
+                    if (vsAfter >= 0) { Console.Write(full[..vsAfter]); Console.Write(new string('*', full.Length - vsAfter)); }
+                    else              { Console.Write(full); }
+                    int moveBack = sb.Length - cursorPos;
+                    if (moveBack > 0) Console.Write(new string('\b', moveBack));
+                }
             }
         }
     }
@@ -403,633 +532,7 @@ static async Task RunInteractiveLoopAsync(
     while (true)
     {
         PrintMenu();
-        string cmd      = ReadChoice();
-        string cmdLower = cmd.ToLowerInvariant(); // for command matching (case-insensitive)
-
-        // ── Global navigation prefix commands ─────────────────────────────────
-
-        // "select <name>" — auto-detect folder vs entry; disambiguate if both match.
-        if (cmdLower.StartsWith("select ")
-            && !cmdLower.StartsWith("select folder ")
-            && !cmdLower.StartsWith("select entry "))
-        {
-            if (viewedEntry is not null) { Console.WriteLine("  Type 'back' to exit the entry view first."); continue; }
-            string name = cmd["select ".Length..].Trim();
-            if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Specify a name."); continue; }
-
-            var matchFolder = keepass.FindChildGroup(currentGroup, name);
-            var matchEntry  = keepass.FindEntryInGroup(currentGroup, name);
-
-            if (matchFolder is null && matchEntry is null)
-                Console.WriteLine($"  Nothing matching '{name}' found in this folder.");
-            else if (matchFolder is not null && matchEntry is not null)
-            {
-                Console.WriteLine($"  Ambiguous — both a folder and an entry match '{name}':");
-                Console.WriteLine($"    folder : {matchFolder.Name}");
-                Console.WriteLine($"    entry  : {matchEntry.Strings.ReadSafe(PwDefs.TitleField)}");
-                Console.WriteLine($"  Use 'select folder {name}' or 'select entry {name}' to disambiguate.");
-            }
-            else if (matchFolder is not null)
-            {
-                currentGroup = matchFolder;
-                Console.WriteLine($"  Entered '{matchFolder.Name}'.");
-            }
-            else
-            {
-                viewedEntry = matchEntry;
-            }
-            continue;
-        }
-
-        if (cmdLower.StartsWith("select folder "))
-        {
-            if (viewedEntry is not null) { Console.WriteLine("  Type 'back' to exit the entry view first."); continue; }
-            string prefix = cmd["select folder ".Length..].Trim();
-            if (string.IsNullOrEmpty(prefix)) { Console.WriteLine("  Please specify a folder name."); continue; }
-            var target = keepass.FindChildGroup(currentGroup, prefix);
-            if (target is null) Console.WriteLine($"  No subfolder matching '{prefix}' found.");
-            else { currentGroup = target; Console.WriteLine($"  Entered '{target.Name}'."); }
-            continue;
-        }
-
-        if (cmdLower.StartsWith("select entry "))
-        {
-            if (viewedEntry is not null) { Console.WriteLine("  Type 'back' to exit the current entry first."); continue; }
-            string prefix = cmd["select entry ".Length..].Trim();
-            if (string.IsNullOrEmpty(prefix)) { Console.WriteLine("  Please specify an entry name."); continue; }
-            var target = keepass.FindEntryInGroup(currentGroup, prefix);
-            if (target is null) Console.WriteLine($"  No entry matching '{prefix}' found.");
-            else viewedEntry = target;
-            continue;
-        }
-
-        // ── Entry view ────────────────────────────────────────────────────────
-        if (viewedEntry is not null)
-        {
-            // "add/create/insert/update <key> with value <val>"
-            // "modify <key> to value <val>"
-            bool isWithValue = (cmdLower.StartsWith("add ")    || cmdLower.StartsWith("create ") ||
-                                 cmdLower.StartsWith("insert ") || cmdLower.StartsWith("update "))
-                               && cmdLower.Contains(" with value ");
-            bool isModify    = cmdLower.StartsWith("modify ") && cmdLower.Contains(" to value ");
-
-            if (isWithValue || isModify)
-            {
-                string key, value;
-                if (isModify)
-                {
-                    int sep = cmdLower.IndexOf(" to value ");
-                    key   = cmd["modify ".Length..sep].Trim();
-                    value = cmd[(sep + " to value ".Length)..].Trim();
-                }
-                else
-                {
-                    int prefixLen   = cmdLower.StartsWith("add ") ? 4 : 7; // "add "=4, others=7
-                    int withValIdx  = cmdLower.IndexOf(" with value ");
-                    key   = cmd[prefixLen..withValIdx].Trim();
-                    value = cmd[(withValIdx + " with value ".Length)..].Trim();
-                }
-
-                if (string.IsNullOrEmpty(key))
-                    Console.WriteLine("  Key cannot be empty.  e.g.: add password with value S3cr3t");
-                else
-                {
-                    keepass.SetEntryField(viewedEntry, key, value);
-                    Console.WriteLine($"  ✓ Field '{key}' set.");
-                    if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-                }
-                continue;
-            }
-
-            // "copy <field>" — named copy within entry view
-            if (cmdLower.StartsWith("copy "))
-            {
-                string fieldKey = cmd["copy ".Length..].Trim();
-                if (!string.IsNullOrEmpty(fieldKey))
-                {
-                    CopyNamedFieldFromEntry(keepass, viewedEntry, fieldKey);
-                    continue;
-                }
-                // bare "copy " (just spaces) — fall through to switch's "copy" case
-            }
-
-            switch (cmdLower)
-            {
-                case "copy":
-                    CopyAttributeFromEntry(keepass, viewedEntry);
-                    break;
-
-                case "update": case "edit":
-                    EditViewedEntry(keepass, viewedEntry);
-                    if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-                    break;
-
-                case "delete": case "del": case "rm":
-                    if (ConfirmDeleteEntry(keepass, viewedEntry))
-                    {
-                        viewedEntry = null;
-                        if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-                    }
-                    break;
-
-                case "back":
-                    viewedEntry = null;
-                    break;
-
-                case "exit": case "quit": case "q":
-                    return;
-
-                default:
-                    Console.WriteLine("  Unknown command.");
-                    break;
-            }
-            continue;
-        }
-
-        // ── Folder view prefix commands ───────────────────────────────────────
-
-        // "add/create folder [<name>]" / "folder [<name>]"
-        if (cmdLower == "add folder"    || cmdLower == "create folder" || cmdLower == "folder" ||
-            cmdLower.StartsWith("add folder ") || cmdLower.StartsWith("create folder "))
-        {
-            string name = cmdLower.StartsWith("add folder ")    ? cmd["add folder ".Length..].Trim()
-                        : cmdLower.StartsWith("create folder ") ? cmd["create folder ".Length..].Trim()
-                        : ConsoleHelper.Prompt("\nFolder name").Trim();
-            if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Folder name cannot be empty."); continue; }
-            if (keepass.CreateGroup(currentGroup, name))
-                Console.WriteLine($"  ✓ Folder '{name}' created.");
-            else
-                Console.WriteLine($"  A folder named '{name}' already exists here.");
-            if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-            continue;
-        }
-
-        // "add/create/new entry <name>" → quick-create entry, navigate to it
-        if (cmdLower.StartsWith("add entry ")    ||
-            cmdLower.StartsWith("new entry ")    ||
-            cmdLower.StartsWith("create entry "))
-        {
-            string name = cmdLower.StartsWith("add entry ")    ? cmd["add entry ".Length..].Trim()
-                        : cmdLower.StartsWith("new entry ")    ? cmd["new entry ".Length..].Trim()
-                        :                                        cmd["create entry ".Length..].Trim();
-            if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Entry name cannot be empty."); continue; }
-            viewedEntry = keepass.AddQuickEntry(currentGroup, name);
-            Console.WriteLine($"  ✓ Entry '{name}' created. Use 'add <key> with value <val>' to fill in fields.");
-            if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-            continue;
-        }
-
-        // "add/new/create <name>" — shorthand quick-create
-        if (cmdLower.StartsWith("add ") || cmdLower.StartsWith("new ") || cmdLower.StartsWith("create "))
-        {
-            string name = cmdLower.StartsWith("add ")    ? cmd["add ".Length..].Trim()
-                        : cmdLower.StartsWith("new ")    ? cmd["new ".Length..].Trim()
-                        :                                  cmd["create ".Length..].Trim();
-            if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Entry name cannot be empty."); continue; }
-            viewedEntry = keepass.AddQuickEntry(currentGroup, name);
-            Console.WriteLine($"  ✓ Entry '{name}' created. Use 'add <key> with value <val>' to fill in fields.");
-            if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-            continue;
-        }
-
-        // "delete/del/rm/remove [<name>]"
-        if (cmdLower == "delete" || cmdLower == "del" || cmdLower == "rm" || cmdLower == "remove" ||
-            cmdLower.StartsWith("delete ") || cmdLower.StartsWith("del ") ||
-            cmdLower.StartsWith("rm ")     || cmdLower.StartsWith("remove "))
-        {
-            string prefix = "";
-            if      (cmdLower.StartsWith("delete ")) prefix = cmd["delete ".Length..].Trim();
-            else if (cmdLower.StartsWith("del "))    prefix = cmd["del ".Length..].Trim();
-            else if (cmdLower.StartsWith("rm "))     prefix = cmd["rm ".Length..].Trim();
-            else if (cmdLower.StartsWith("remove ")) prefix = cmd["remove ".Length..].Trim();
-
-            if (string.IsNullOrEmpty(prefix))
-                DeleteEntry(keepass, currentGroup);
-            else
-                DeleteEntryByName(keepass, currentGroup, prefix);
-
-            if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-            continue;
-        }
-
-        // "search/find [<term>]"
-        if (cmdLower == "search" || cmdLower == "find" ||
-            cmdLower.StartsWith("search ") || cmdLower.StartsWith("find "))
-        {
-            string term = "";
-            if      (cmdLower.StartsWith("search ")) term = cmd["search ".Length..].Trim();
-            else if (cmdLower.StartsWith("find "))   term = cmd["find ".Length..].Trim();
-
-            SearchEntries(keepass, currentGroup, term);
-            continue;
-        }
-
-        // "update/edit/modify [<name>]"
-        if (cmdLower == "update" || cmdLower == "edit" || cmdLower == "modify" ||
-            cmdLower.StartsWith("update ") || cmdLower.StartsWith("edit ") || cmdLower.StartsWith("modify "))
-        {
-            // Field-set forms belong in entry view — guide the user.
-            if (cmdLower.Contains(" with value ") || cmdLower.Contains(" to value "))
-            {
-                Console.WriteLine("  Open an entry first, then use the field-set command.");
-                Console.WriteLine("  e.g.: select gmail  →  update password with value S3cr3t");
-                Console.WriteLine("  e.g.: select gmail  →  modify password to value S3cr3t");
-                continue;
-            }
-
-            string prefix = "";
-            if      (cmdLower.StartsWith("update ")) prefix = cmd["update ".Length..].Trim();
-            else if (cmdLower.StartsWith("edit "))   prefix = cmd["edit ".Length..].Trim();
-            else if (cmdLower.StartsWith("modify ")) prefix = cmd["modify ".Length..].Trim();
-
-            if (string.IsNullOrEmpty(prefix))
-            {
-                EditEntry(keepass, currentGroup);
-            }
-            else
-            {
-                var entry = keepass.FindEntryInGroup(currentGroup, prefix);
-                if (entry is null)
-                    Console.WriteLine($"  No entry matching '{prefix}' found.");
-                else
-                {
-                    viewedEntry = entry;
-                    EditViewedEntry(keepass, entry);
-                }
-            }
-            if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-            continue;
-        }
-
-        // "copy <field> from <entry>"
-        if (cmdLower.StartsWith("copy ") && cmdLower.Contains(" from "))
-        {
-            int    fromIdx   = cmdLower.LastIndexOf(" from ");
-            string fieldKey  = cmd[5..fromIdx].Trim();         // after "copy ", preserve case
-            string entryName = cmd[(fromIdx + 6)..].Trim();    // after " from ", preserve case
-
-            if (string.IsNullOrEmpty(fieldKey))
-                Console.WriteLine("  Specify a field name.  e.g.: copy password from gmail");
-            else if (string.IsNullOrEmpty(entryName))
-                Console.WriteLine("  Specify an entry name. e.g.: copy password from gmail");
-            else
-            {
-                var entry = keepass.FindEntryInGroup(currentGroup, entryName);
-                if (entry is null) Console.WriteLine($"  No entry matching '{entryName}' found.");
-                else               CopyNamedFieldFromEntry(keepass, entry, fieldKey);
-            }
-            continue;
-        }
-
-        // "copy <field>" without "from" — hint
-        if (cmdLower.StartsWith("copy "))
-        {
-            Console.WriteLine("  Usage: copy <field> from <entry>   e.g.: copy password from gmail");
-            Console.WriteLine("  Or use bare 'copy' for interactive selection.");
-            continue;
-        }
-
-        // ── Bare commands (no arguments) ──────────────────────────────────────
-        switch (cmdLower)
-        {
-            case "add": case "create":
-                AddEntry(keepass, currentGroup);
-                if (keepass.IsModified) await OfferUploadAsync(keepass, drive, fileId, fileName);
-                break;
-
-            case "copy":
-                CopyAttribute(keepass, currentGroup);
-                break;
-
-            case "list": case "ls":
-                keepass.ListGroup(currentGroup);
-                break;
-
-            case "back":
-                if (!ReferenceEquals(currentGroup, keepass.RootGroup))
-                {
-                    currentGroup = currentGroup.ParentGroup ?? keepass.RootGroup;
-                    Console.WriteLine($"  Back to '{currentGroup.Name}'.");
-                }
-                else
-                {
-                    Console.WriteLine("  Already at root.");
-                }
-                break;
-
-            case "exit": case "quit": case "q":
-                return;
-
-            default:
-                Console.WriteLine("  Unknown command. Type 'list' to see folder contents.");
-                break;
-        }
+        ICommand command = CommandParser.Parse(ReadChoice());
+        if (!await executor.ExecuteAsync(command)) return;
     }
 }
-
-/// <summary>Offers to upload when the database has unsaved changes.</summary>
-static async Task OfferUploadAsync(
-    KeePassService     keepass,
-    GoogleDriveService drive,
-    string             fileId,
-    string             fileName)
-{
-    Console.Write("\nUpload changes to Google Drive? (y/n): ");
-    if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true)
-        await UploadChangesAsync(keepass, drive, fileId, fileName);
-}
-
-/// <summary>Prints all fields of <paramref name="entry"/> to the console.</summary>
-static void ShowEntry(KeePassService keepass, PwEntry entry)
-{
-    var fields = keepass.GetEntryFields(entry);
-    Console.WriteLine();
-    foreach (var (name, value, isProtected, isCustom) in fields)
-    {
-        string display = isProtected ? "●●●●●●●●" : value;
-        string tag     = isCustom    ? " [custom]" : string.Empty;
-        Console.WriteLine($"  {name,-16}: {display}{tag}");
-    }
-}
-
-/// <summary>
-/// Interactively creates a new entry (all fields prompted).
-/// </summary>
-static void AddEntry(KeePassService keepass, PwGroup targetGroup)
-{
-    Console.WriteLine();
-
-    string title;
-    do
-    {
-        title = ConsoleHelper.Prompt("Title").Trim();
-        if (string.IsNullOrEmpty(title))
-            Console.WriteLine("  Title cannot be empty.");
-    }
-    while (string.IsNullOrEmpty(title));
-
-    string? username = NullIfEmpty(ConsoleHelper.Prompt("Username (Enter to skip)"));
-    string? url      = NullIfEmpty(ConsoleHelper.Prompt("Website  (Enter to skip)"));
-    string? notes    = NullIfEmpty(ConsoleHelper.Prompt("Notes    (Enter to skip)"));
-
-    Console.Write("Password (Enter to skip): ");
-    string? password = NullIfEmpty(ConsoleHelper.ReadPassword());
-
-    var customFields = new List<(string Key, string Value)>();
-    Console.WriteLine("\n  Custom fields (all values are protected). Leave key blank to finish.");
-    while (true)
-    {
-        string key = ConsoleHelper.Prompt("  Key").Trim();
-        if (string.IsNullOrEmpty(key)) break;
-
-        Console.Write("  Value (hidden): ");
-        string value = ConsoleHelper.ReadPassword();
-        customFields.Add((key, value));
-    }
-
-    keepass.AddEntryTo(targetGroup, title, username, password, url, notes, customFields);
-    Console.WriteLine($"\n  ✓ Entry '{title}' added to '{targetGroup.Name}'.");
-}
-
-/// <summary>
-/// Copies a named field (case-insensitive key match) from <paramref name="entry"/>
-/// to the clipboard using the secure clipboard helper.
-/// </summary>
-static void CopyNamedFieldFromEntry(KeePassService keepass, PwEntry entry, string fieldKey)
-{
-    var fields = keepass.GetEntryFields(entry);
-    int idx = -1;
-    for (int i = 0; i < fields.Count; i++)
-        if (fields[i].Name.Equals(fieldKey, StringComparison.OrdinalIgnoreCase))
-        { idx = i; break; }
-
-    if (idx < 0)
-    {
-        Console.WriteLine($"  Field '{fieldKey}' not found.");
-        if (fields.Count > 0)
-            Console.WriteLine($"  Available: {string.Join(", ", fields.Select(f => f.Name))}");
-        return;
-    }
-
-    ClipboardHelper.SetSecureText(fields[idx].Value);
-    Console.WriteLine($"  ✓ '{fields[idx].Name}' copied. Clipboard clears in 60 s.");
-}
-
-/// <summary>
-/// Interactive: shows fields of <paramref name="entry"/>, lets the user pick one,
-/// and copies it to the clipboard.
-/// </summary>
-static void CopyAttributeFromEntry(KeePassService keepass, PwEntry entry)
-{
-    var fields = keepass.GetEntryFields(entry);
-    if (fields.Count == 0) { Console.WriteLine("  Entry has no fields."); return; }
-
-    Console.WriteLine($"\n  Fields in '{entry.Strings.ReadSafe(PwDefs.TitleField)}':");
-    for (int i = 0; i < fields.Count; i++)
-    {
-        string display = fields[i].IsProtected ? "●●●●●●●●" : fields[i].Value;
-        string tag     = fields[i].IsCustom    ? " [custom]" : string.Empty;
-        Console.WriteLine($"    [{i + 1}] {fields[i].Name,-16}: {display}{tag}");
-    }
-
-    Console.Write($"\nField to copy (1–{fields.Count}): ");
-    if (!int.TryParse(Console.ReadLine(), out int fieldNum)
-        || fieldNum < 1 || fieldNum > fields.Count)
-    {
-        Console.WriteLine("  Invalid number — nothing copied.");
-        return;
-    }
-
-    var chosen = fields[fieldNum - 1];
-    ClipboardHelper.SetSecureText(chosen.Value);
-    Console.WriteLine($"  ✓ '{chosen.Name}' copied. Clipboard clears in 60 s.");
-}
-
-/// <summary>
-/// Interactive: lists entries in <paramref name="scope"/>, lets the user pick one,
-/// then copy a field.
-/// </summary>
-static void CopyAttribute(KeePassService keepass, PwGroup scope)
-{
-    var entries = keepass.GetEntries(scope);
-    if (entries.Count == 0) { Console.WriteLine("  No entries in this folder."); return; }
-
-    keepass.ListGroup(scope);
-
-    Console.Write($"\nEntry number to copy from (1–{entries.Count}): ");
-    if (!int.TryParse(Console.ReadLine(), out int num) || num < 1 || num > entries.Count)
-    {
-        Console.WriteLine("  Invalid number — nothing copied.");
-        return;
-    }
-
-    CopyAttributeFromEntry(keepass, entries[num - 1]);
-}
-
-/// <summary>
-/// Searches entries within <paramref name="scope"/>.
-/// If <paramref name="term"/> is empty the user is prompted for it.
-/// </summary>
-static void SearchEntries(KeePassService keepass, PwGroup scope, string term = "")
-{
-    if (string.IsNullOrEmpty(term))
-        term = ConsoleHelper.Prompt("\nSearch").Trim();
-    if (string.IsNullOrEmpty(term)) { Console.WriteLine("  Empty search term."); return; }
-
-    var results = keepass.Search(term, scope);
-
-    if (results.Count == 0) { Console.WriteLine($"  No entries matched '{term}'."); return; }
-
-    Console.WriteLine($"\n  {results.Count} match{(results.Count == 1 ? "" : "es")} for '{term}':");
-    foreach (var (index, entry, folder) in results)
-    {
-        string tag = string.IsNullOrEmpty(folder) ? "" : $"  ({folder})";
-        Console.WriteLine($"  [{index:D2}] {entry.Strings.ReadSafe(PwDefs.TitleField)}{tag}");
-    }
-}
-
-/// <summary>
-/// Interactive: lists entries, asks the user to pick one by number, then
-/// moves the chosen entry to the recycle bin (or permanently deletes if already in bin).
-/// </summary>
-static void DeleteEntry(KeePassService keepass, PwGroup scope)
-{
-    var entries = keepass.GetEntries(scope);
-    if (entries.Count == 0) { Console.WriteLine("  No entries in this folder."); return; }
-
-    keepass.ListGroup(scope);
-
-    Console.Write($"\nEntry number to delete (1–{entries.Count}): ");
-    if (!int.TryParse(Console.ReadLine(), out int num) || num < 1 || num > entries.Count)
-    {
-        Console.WriteLine("  Invalid number — nothing deleted.");
-        return;
-    }
-
-    ConfirmDeleteEntry(keepass, entries[num - 1]);
-}
-
-/// <summary>Finds an entry by name prefix and passes it to <see cref="ConfirmDeleteEntry"/>.</summary>
-static void DeleteEntryByName(KeePassService keepass, PwGroup scope, string prefix)
-{
-    var entry = keepass.FindEntryInGroup(scope, prefix);
-    if (entry is null) { Console.WriteLine($"  No entry matching '{prefix}' found."); return; }
-    ConfirmDeleteEntry(keepass, entry);
-}
-
-/// <summary>
-/// Asks for confirmation then moves the entry to the recycle bin.
-/// If the entry is already in the recycle bin, offers permanent deletion instead.
-/// Returns <c>true</c> if the entry was deleted/moved.
-/// </summary>
-static bool ConfirmDeleteEntry(KeePassService keepass, PwEntry entry)
-{
-    string title = entry.Strings.ReadSafe(PwDefs.TitleField);
-
-    if (keepass.IsInRecycleBin(entry))
-    {
-        Console.Write($"\n  Permanently delete '{title}'? This cannot be undone. (y/n): ");
-        if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) != true)
-        {
-            Console.WriteLine("  Cancelled.");
-            return false;
-        }
-        keepass.DeleteEntry(entry);
-        Console.WriteLine($"  ✓ '{title}' permanently deleted.");
-    }
-    else
-    {
-        Console.Write($"\n  Move '{title}' to recycle bin? (y/n): ");
-        if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) != true)
-        {
-            Console.WriteLine("  Cancelled.");
-            return false;
-        }
-        keepass.MoveToRecycleBin(entry);
-        Console.WriteLine($"  ✓ '{title}' moved to recycle bin.");
-    }
-
-    return true;
-}
-
-/// <summary>
-/// Interactive: lists entries, lets the user pick one by number, then edits it.
-/// </summary>
-static void EditEntry(KeePassService keepass, PwGroup scope)
-{
-    var entries = keepass.GetEntries(scope);
-    if (entries.Count == 0) { Console.WriteLine("  No entries to edit."); return; }
-
-    keepass.ListGroup(scope);
-
-    Console.Write($"\nEntry number to edit (1–{entries.Count}): ");
-    if (!int.TryParse(Console.ReadLine(), out int num) || num < 1 || num > entries.Count)
-    {
-        Console.WriteLine("  Invalid number — no changes made.");
-        return;
-    }
-
-    EditViewedEntry(keepass, entries[num - 1]);
-}
-
-/// <summary>
-/// Prompts the user to update each field of <paramref name="entry"/>.
-/// Pressing Enter on a field keeps its current value.
-/// </summary>
-static void EditViewedEntry(KeePassService keepass, PwEntry entry)
-{
-    string curTitle    = entry.Strings.ReadSafe(PwDefs.TitleField);
-    string curUsername = entry.Strings.ReadSafe(PwDefs.UserNameField);
-    string curUrl      = entry.Strings.ReadSafe(PwDefs.UrlField);
-    string curNotes    = entry.Strings.ReadSafe(PwDefs.NotesField);
-
-    Console.WriteLine($"\nEditing: {curTitle}");
-    Console.WriteLine("  (Press Enter on any field to keep the current value)\n");
-
-    string? title    = NullIfEmpty(ConsoleHelper.Prompt("Title",    curTitle));
-    string? username = NullIfEmpty(ConsoleHelper.Prompt("Username", curUsername));
-    string? url      = NullIfEmpty(ConsoleHelper.Prompt("URL",      curUrl));
-    string? notes    = NullIfEmpty(ConsoleHelper.Prompt("Notes",    curNotes));
-
-    Console.Write("New password (Enter = keep current): ");
-    string? password = NullIfEmpty(ConsoleHelper.ReadPassword());
-
-    keepass.UpdateEntry(entry, title, username, password, url, notes);
-    Console.WriteLine("\n  ✓ Entry updated in memory.");
-}
-
-/// <summary>
-/// Serialises the modified database to a MemoryStream and uploads it to Drive.
-/// </summary>
-static async Task UploadChangesAsync(
-    KeePassService     keepass,
-    GoogleDriveService drive,
-    string             fileId,
-    string             fileName)
-{
-    Console.WriteLine("\nSerialising database…");
-    MemoryStream? updated = keepass.SaveToStream();
-
-    if (updated is null)
-    {
-        Console.WriteLine("  Nothing to upload (no changes were detected).");
-        return;
-    }
-
-    Console.WriteLine($"Uploading '{fileName}' ({updated.Length:N0} bytes) to Google Drive…");
-    try
-    {
-        await drive.UploadFileAsync(fileId, fileName, updated);
-        Console.WriteLine($"  ✓ '{fileName}' uploaded successfully.");
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"  ERROR: Upload failed — {ex.Message}");
-    }
-    finally
-    {
-        await updated.DisposeAsync();
-    }
-}
-
-static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;

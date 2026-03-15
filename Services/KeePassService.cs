@@ -337,6 +337,26 @@ public sealed class KeePassService : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Removes a single field from <paramref name="entry"/>.
+    /// Returns <c>false</c> if the field does not exist or resolves to the required Title field.
+    /// </summary>
+    public bool RemoveEntryField(PwEntry entry, string key)
+    {
+        string fieldName = FieldAliases.TryGetValue(key, out string? mapped) ? mapped : key;
+        if (fieldName == PwDefs.TitleField) return false;
+        if (entry.Strings.Get(fieldName) == null) return false;
+        entry.CreateBackup(_db);
+        entry.Touch(bModified: true);
+        entry.Strings.Remove(fieldName);
+        _modified = true;
+        return true;
+    }
+
+    /// <summary>Resolves a field-name alias to its canonical KeePass field name.</summary>
+    public string ResolveFieldAlias(string key)
+        => FieldAliases.TryGetValue(key, out string? mapped) ? mapped : key;
+
     /// <summary>Permanently removes a specific entry (bypasses recycle bin).</summary>
     public void DeleteEntry(PwEntry entry)
     {
@@ -398,6 +418,94 @@ public sealed class KeePassService : IDisposable
         return recycleBin;
     }
 
+    /// <summary>Moves <paramref name="entry"/> to <paramref name="destination"/>.</summary>
+    public void MoveEntryToGroup(PwEntry entry, PwGroup destination)
+    {
+        entry.ParentGroup?.Entries.Remove(entry);
+        destination.AddEntry(entry, bTakeOwnership: true);
+        _modified = true;
+    }
+
+    /// <summary>
+    /// Moves <paramref name="group"/> under <paramref name="destination"/>.
+    /// Call <see cref="WouldCreateCycle"/> first to guard against circular moves.
+    /// </summary>
+    public void MoveGroupToGroup(PwGroup group, PwGroup destination)
+    {
+        group.ParentGroup?.Groups.Remove(group);
+        destination.AddGroup(group, bTakeOwnership: true);
+        _modified = true;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> if moving <paramref name="group"/> into <paramref name="newParent"/>
+    /// would create a cycle (i.e. <paramref name="newParent"/> is the group itself or one of its descendants).
+    /// </summary>
+    public static bool WouldCreateCycle(PwGroup group, PwGroup newParent)
+    {
+        var cur = newParent;
+        while (cur != null)
+        {
+            if (ReferenceEquals(cur, group)) return true;
+            cur = cur.ParentGroup;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Searches the whole database for a group whose name matches <paramref name="name"/>
+    /// (exact match first, then prefix, case-insensitive).
+    /// </summary>
+    public PwGroup? FindGroup(string name)
+        => FindGroupRecursive(_db.RootGroup, name, exact: true)
+        ?? FindGroupRecursive(_db.RootGroup, name, exact: false);
+
+    private static PwGroup? FindGroupRecursive(PwGroup parent, string name, bool exact)
+    {
+        foreach (PwGroup g in parent.Groups)
+        {
+            bool match = exact
+                ? g.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                : g.Name.StartsWith(name, StringComparison.OrdinalIgnoreCase);
+            if (match) return g;
+            var found = FindGroupRecursive(g, name, exact);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    /// <summary>Renames <paramref name="group"/> to <paramref name="newName"/>.</summary>
+    public void RenameGroup(PwGroup group, string newName)
+    {
+        group.Name = newName;
+        _modified = true;
+    }
+
+    /// <summary>Moves <paramref name="group"/> to the Recycle Bin, creating it if needed.</summary>
+    public void MoveGroupToRecycleBin(PwGroup group)
+    {
+        var bin = GetOrCreateRecycleBin();
+        group.ParentGroup?.Groups.Remove(group);
+        bin.AddGroup(group, bTakeOwnership: true);
+        _modified = true;
+    }
+
+    /// <summary>Permanently removes <paramref name="group"/> and all its contents.</summary>
+    public void DeleteGroup(PwGroup group)
+    {
+        group.ParentGroup?.Groups.Remove(group);
+        _modified = true;
+    }
+
+    /// <summary>Returns <c>true</c> when <paramref name="group"/>'s parent is the Recycle Bin.</summary>
+    public bool IsGroupInRecycleBin(PwGroup group)
+    {
+        if (group.ParentGroup is null) return false;
+        var binUuid = _db.RecycleBinUuid;
+        if (binUuid is null || binUuid.Equals(PwUuid.Zero)) return false;
+        return group.ParentGroup.Uuid.Equals(binUuid);
+    }
+
     // ── Write: groups ─────────────────────────────────────────────────────────
 
     /// <summary>
@@ -440,6 +548,9 @@ public sealed class KeePassService : IDisposable
     }
 
     public bool IsModified => _modified;
+
+    /// <summary>Resets the modified flag after a successful upload.</summary>
+    public void MarkSaved() => _modified = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
