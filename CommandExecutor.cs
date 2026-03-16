@@ -254,7 +254,12 @@ internal sealed class CommandExecutor(
             return;
         }
 
-        string path = cmd.FilePath.Trim().Trim('"');
+        // Resolve to the canonical absolute path to prevent path-traversal tricks
+        // such as ../../sensitive-file being smuggled in via the command.
+        string path;
+        try   { path = Path.GetFullPath(cmd.FilePath.Trim().Trim('"')); }
+        catch { ui.WriteLine("  Invalid file path."); return; }
+
         if (!File.Exists(path))
         {
             ui.WriteLine($"  File not found: '{path}'");

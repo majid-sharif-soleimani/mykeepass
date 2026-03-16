@@ -257,9 +257,15 @@ internal sealed class ConsoleUI : IUserInterface
             {
                 Console.WriteLine();
                 string result = sb.ToString().Trim();
-                if (!string.IsNullOrEmpty(result)
-                    && (history.Count == 0 || history[^1] != result))
-                    history.Add(result);
+                if (!string.IsNullOrEmpty(result))
+                {
+                    // Store only the command prefix — never the secret value — so
+                    // plaintext passwords are not kept in the in-memory history list.
+                    int    vs           = ValueStartIndex(result);
+                    string historyEntry = vs >= 0 ? result[..vs] : result;
+                    if (history.Count == 0 || history[^1] != historyEntry)
+                        history.Add(historyEntry);
+                }
                 histPos    = history.Count;
                 savedInput = "";
                 cursorPos  = 0;

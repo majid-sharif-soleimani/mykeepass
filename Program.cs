@@ -153,6 +153,11 @@ try
                     return;
                 }
 
+                // Exponential backoff: 1 s, 2 s, 4 s … slows down brute-force.
+                int delaySec = (int)Math.Pow(2, attempt - 1);
+                Console.Error.WriteLine($"  Waiting {delaySec}s before next attempt…");
+                await Task.Delay(TimeSpan.FromSeconds(delaySec));
+
                 dbStream.Position = 0;
             }
         }
@@ -171,6 +176,8 @@ try
                 Console.WriteLine("  ✓ Password saved to Windows Credential Vault.\n");
             }
         }
+        // Allow successPwd to be GC-eligible as soon as it's no longer needed.
+        successPwd = null;
     }
 
     keepass = ks!;

@@ -397,8 +397,12 @@ internal sealed class TerminalGuiUI : IUserInterface
                     return;
                 }
 
-                if (cmdHistory.Count == 0 || cmdHistory[^1] != text)
-                    cmdHistory.Add(text);
+                // Store only the command prefix (never the secret value) so that
+                // passwords are not kept in the in-memory history list.
+                int    vs           = ConsoleUI.ValueStartIndex(text);
+                string historyEntry = vs >= 0 ? text[..vs] : text;
+                if (cmdHistory.Count == 0 || cmdHistory[^1] != historyEntry)
+                    cmdHistory.Add(historyEntry);
                 histPos = cmdHistory.Count;
 
                 AppendHistory($"> {MaskForHistory(text)}");
