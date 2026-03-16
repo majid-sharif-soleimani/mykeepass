@@ -8,6 +8,7 @@ namespace mykeepass.Helpers;
 internal static class ConsoleWindowHelper
 {
     [DllImport("kernel32.dll")] private static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")]   private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
@@ -22,10 +23,10 @@ internal static class ConsoleWindowHelper
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
 
-    private const uint SWP_NOSIZE    = 0x0001;  // keep current size
-    private const uint SWP_NOZORDER  = 0x0004;  // keep z-order
-    private const int  SM_CXSCREEN   = 0;
-    private const int  SM_CYSCREEN   = 1;
+    private const uint SWP_NOSIZE   = 0x0001;  // keep current size
+    private const uint SWP_NOZORDER = 0x0004;  // keep z-order
+    private const int  SM_CXSCREEN  = 0;
+    private const int  SM_CYSCREEN  = 1;
 
     /// <summary>
     /// Centers the console window on the primary monitor without changing its size.
@@ -47,5 +48,20 @@ internal static class ConsoleWindowHelper
         int y = Math.Max(0, (screenH - winH) / 2);
 
         SetWindowPos(hWnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    }
+
+    /// <summary>
+    /// Returns the HWND of the current foreground (focused) window, which is
+    /// the correct owner handle to pass to WinRT dialogs (e.g. Windows Hello).
+    /// Falls back to the console host window if the foreground handle is unavailable.
+    /// Using GetForegroundWindow() instead of GetConsoleWindow() is necessary for
+    /// Windows Terminal, which hosts the console inside a ConPTY process whose
+    /// window is hidden from the user.
+    /// </summary>
+    public static IntPtr GetHandle()
+    {
+        IntPtr hwnd = GetForegroundWindow();
+        if (hwnd != IntPtr.Zero) return hwnd;
+        return GetConsoleWindow();
     }
 }

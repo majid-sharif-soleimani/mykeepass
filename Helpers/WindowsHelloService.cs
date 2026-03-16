@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using System.Text;
+using Windows.Foundation;
 using Windows.Security.Credentials;
 using Windows.Security.Credentials.UI;
 
@@ -14,6 +16,40 @@ namespace mykeepass.Helpers;
 internal static class WindowsHelloService
 {
     private const string VaultResource = "MyKeePass";
+
+    // ── IUserConsentVerifierInterop ────────────────────────────────────────────
+    // Win32 apps must use this COM interop interface instead of the plain WinRT
+    // static method so they can pass an owner HWND.  Windows then shows the
+    // "Making sure it's you" dialog in front of (owned by) that window.
+    // GUID: 39E050C3-4E74-441A-8DC0-B81104DF949C  (userconsentverifierinterop.h)
+
+    [Guid("39E050C3-4E74-441A-8DC0-B81104DF949C")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIInspectable)]
+    [ComImport]
+    private interface IUserConsentVerifierInterop
+    {
+        // Maps to: HRESULT RequestVerificationForWindowAsync(HWND, HSTRING, REFIID, void**)
+        void RequestVerificationForWindowAsync(
+            IntPtr                                    appWindow,
+            [MarshalAs(UnmanagedType.HString)] string message,
+            ref Guid                                  riid,
+            out IntPtr                                asyncOperation);
+    }
+
+    [DllImport("combase.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int RoGetActivationFactory(
+        IntPtr activatableClassId,   // HSTRING
+        ref Guid riid,
+        out IntPtr factory);
+
+    [DllImport("combase.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int WindowsCreateString(
+        [MarshalAs(UnmanagedType.LPWStr)] string? src,
+        uint length,
+        out IntPtr hstring);
+
+    [DllImport("combase.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int WindowsDeleteString(IntPtr hstring);
 
     // ── Availability ──────────────────────────────────────────────────────────
 
@@ -36,11 +72,65 @@ internal static class WindowsHelloService
     // ── Identity verification ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Shows the "Making sure it's you" Windows Security dialog.
+    /// Shows the "Making sure it's you" Windows Security dialog owned by
+    /// <paramref name="ownerHwnd"/>, so the dialog appears in front of the
+    /// caller's window rather than behind it.
+    /// Falls back to the owner-less WinRT API if the interop path fails.
     /// Returns true only when the user successfully verifies (PIN / biometric).
     /// </summary>
-    public static async Task<bool> VerifyAsync(string message)
+    public static async Task<bool> VerifyAsync(IntPtr ownerHwnd, string message)
     {
+        if (ownerHwnd != IntPtr.Zero)
+        {
+            try
+            {
+                const string classId =
+                    "Windows.Security.Credentials.UI.UserConsentVerifier";
+
+                int hr = WindowsCreateString(classId, (uint)classId.Length,
+                                             out IntPtr hsClassId);
+                if (hr >= 0)
+                {
+                    try
+                    {
+                        Guid interopIid = typeof(IUserConsentVerifierInterop).GUID;
+                        hr = RoGetActivationFactory(hsClassId, ref interopIid,
+                                                    out IntPtr pFactory);
+                        if (hr >= 0)
+                        {
+                            try
+                            {
+                                var interop = (IUserConsentVerifierInterop)
+                                    Marshal.GetObjectForIUnknown(pFactory);
+
+                                Guid asyncIid =
+                                    typeof(IAsyncOperation<UserConsentVerificationResult>)
+                                    .GUID;
+
+                                interop.RequestVerificationForWindowAsync(
+                                    ownerHwnd, message, ref asyncIid, out IntPtr asyncPtr);
+
+                                try
+                                {
+                                    var asyncOp =
+                                        (IAsyncOperation<UserConsentVerificationResult>)
+                                        Marshal.GetObjectForIUnknown(asyncPtr);
+
+                                    var result = await asyncOp;
+                                    return result == UserConsentVerificationResult.Verified;
+                                }
+                                finally { Marshal.Release(asyncPtr); }
+                            }
+                            finally { Marshal.Release(pFactory); }
+                        }
+                    }
+                    finally { WindowsDeleteString(hsClassId); }
+                }
+            }
+            catch { /* fall through to the owner-less API below */ }
+        }
+
+        // Fallback: no owner HWND or interop failed — use the plain WinRT static.
         try
         {
             var result = await UserConsentVerifier.RequestVerificationAsync(message);

@@ -1,4 +1,4 @@
-using Terminal.Gui;
+using Terminal.Gui;  // Application.Invoke, Dialog, Label, TextField, Button, ListView
 
 namespace mykeepass.UI;
 
@@ -88,8 +88,35 @@ internal sealed class TerminalGuiInteraction(Action<string> appendHistory) : IUs
         return result;
     }
 
-    public bool Confirm(string question)
-        => MessageBox.Query("Confirm", question, "Yes", "No") == 0;
+    // ── Inline confirmation ───────────────────────────────────────────────────
+    // Instead of a modal dialog, the question is printed to the history panel
+    // and the user answers by typing y / yes / n / no in the command field.
+    // TerminalGuiUI.cs resolves the pending TCS when the answer arrives.
+
+    private TaskCompletionSource<bool>? _pendingConfirm;
+
+    public bool IsPendingConfirmation => _pendingConfirm is not null;
+
+    /// <summary>
+    /// Appends the question to history and waits asynchronously for the user
+    /// to type y / yes / n / no in the command field.
+    /// </summary>
+    public Task<bool> ConfirmAsync(string question)
+    {
+        Application.Invoke(() => appendHistory($"  {question} [y/n]: "));
+        _pendingConfirm = new TaskCompletionSource<bool>();
+        return _pendingConfirm.Task;
+    }
+
+    /// <summary>
+    /// Called by <see cref="TerminalGuiUI"/> when the user submits an answer.
+    /// </summary>
+    public void CompleteConfirmation(bool answer)
+    {
+        var tcs = _pendingConfirm;
+        _pendingConfirm = null;
+        tcs?.SetResult(answer);
+    }
 
     public int PickFromList(string prompt, IReadOnlyList<string> items)
     {

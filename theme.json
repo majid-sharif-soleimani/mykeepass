@@ -1,0 +1,9 @@
+{
+  "_availableColors": "Black Blue Green Cyan Red Magenta Brown Gray DarkGray BrightBlue BrightGreen BrightCyan BrightRed BrightMagenta Yellow White",
+
+  "Normal":    { "Foreground": "White",       "Background": "Black" },
+  "Focus":     { "Foreground": "White",       "Background": "Black" },
+  "HotNormal": { "Foreground": "BrightGreen", "Background": "Black" },
+  "HotFocus":  { "Foreground": "BrightGreen", "Background": "Black" },
+  "Disabled":  { "Foreground": "Gray",        "Background": "Black" }
+}

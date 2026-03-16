@@ -94,8 +94,16 @@ try
     // ── 4a: Windows Hello path ────────────────────────────────────────────────
     if (helloAvailable && WindowsHelloService.HasStoredPassword(config.DatabaseName))
     {
+        Console.Write("Windows Hello is available. Use it? [Y/n]: ");
+        string? helloChoice = Console.ReadLine();
+        bool useHello = string.IsNullOrWhiteSpace(helloChoice) ||
+                        helloChoice.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
+
+        if (!useHello) goto skipHello;
+
         Console.WriteLine("Verifying identity with Windows Hello…");
         bool verified = await WindowsHelloService.VerifyAsync(
+            ConsoleWindowHelper.GetHandle(),
             "MyKeePass wants to open your password database.");
 
         if (!verified)
@@ -135,6 +143,7 @@ try
         }
     }
 
+    skipHello:
     // ── 4b: Manual password entry (first run, or Hello path failed) ───────────
     if (ks is null)
     {

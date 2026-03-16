@@ -86,7 +86,7 @@ internal sealed class CommandExecutor(
                 return true;
 
             case DeleteFolderCommand df:
-                HandleDeleteFolder(df);
+                await HandleDeleteFolder(df);
                 return true;
 
             case DeleteCommand del:
@@ -310,7 +310,7 @@ internal sealed class CommandExecutor(
         }
     }
 
-    private void HandleDelete(DeleteCommand cmd)
+    private async Task HandleDelete(DeleteCommand cmd)
     {
         if (_viewedEntry is not null)
         {
@@ -331,7 +331,7 @@ internal sealed class CommandExecutor(
             else
             {
                 // Entry view, no name: delete the entry itself.
-                if (ConfirmDeleteEntry(keepass, _viewedEntry, ui))
+                if (await ConfirmDeleteEntry(keepass, _viewedEntry, ui))
                 {
                     _viewedEntry = null;
                     NotifyStateChanged();
@@ -348,7 +348,7 @@ internal sealed class CommandExecutor(
         }
     }
 
-    private void HandleDeleteFolder(DeleteFolderCommand cmd)
+    private async Task HandleDeleteFolder(DeleteFolderCommand cmd)
     {
         if (_viewedEntry is not null) { ui.WriteLine("  Unknown command."); return; }
 
@@ -357,7 +357,7 @@ internal sealed class CommandExecutor(
 
         if (keepass.IsGroupInRecycleBin(group))
         {
-            if (!ui.Confirm($"Permanently delete folder '{group.Name}' and all its contents? This cannot be undone."))
+            if (!await ui.ConfirmAsync($"Permanently delete folder '{group.Name}' and all its contents? This cannot be undone."))
             { ui.WriteLine("  Cancelled."); return; }
             keepass.DeleteGroup(group);
             ui.WriteLine($"  ✓ Folder '{group.Name}' permanently deleted.");
@@ -365,7 +365,7 @@ internal sealed class CommandExecutor(
         }
         else
         {
-            if (!ui.Confirm($"Move folder '{group.Name}' to recycle bin?"))
+            if (!await ui.ConfirmAsync($"Move folder '{group.Name}' to recycle bin?"))
             { ui.WriteLine("  Cancelled."); return; }
             keepass.MoveGroupToRecycleBin(group);
             ui.WriteLine($"  ✓ Folder '{group.Name}' moved to recycle bin.");
@@ -569,7 +569,7 @@ internal sealed class CommandExecutor(
     {
         if (!keepass.IsModified) return;
 
-        if (ui.Confirm("You have unsaved changes. Upload to Google Drive?"))
+        if (await ui.ConfirmAsync("You have unsaved changes. Upload to Google Drive?"))
             await UploadChangesAsync();
     }
 
@@ -750,7 +750,7 @@ internal sealed class CommandExecutor(
     /// Interactive: lists entries, asks the user to pick one by number, then
     /// moves the chosen entry to the recycle bin (or permanently deletes if already in bin).
     /// </summary>
-    private static void DeleteEntry(KeePassService kp, PwGroup scope, IUserInteraction ui)
+    private static async Task DeleteEntry(KeePassService kp, PwGroup scope, IUserInteraction ui)
     {
         var entries = kp.GetEntries(scope);
         if (entries.Count == 0) { ui.WriteLine("  No entries in this folder."); return; }
@@ -765,15 +765,15 @@ internal sealed class CommandExecutor(
             return;
         }
 
-        ConfirmDeleteEntry(kp, entries[choice - 1], ui);
+        await ConfirmDeleteEntry(kp, entries[choice - 1], ui);
     }
 
     /// <summary>Finds an entry by name prefix and passes it to <see cref="ConfirmDeleteEntry"/>.</summary>
-    private static void DeleteEntryByName(KeePassService kp, PwGroup scope, string prefix, IUserInteraction ui)
+    private static async Task DeleteEntryByName(KeePassService kp, PwGroup scope, string prefix, IUserInteraction ui)
     {
         var entry = kp.FindEntryInGroup(scope, prefix);
         if (entry is null) { ui.WriteLine($"  No entry matching '{prefix}' found."); return; }
-        ConfirmDeleteEntry(kp, entry, ui);
+        await ConfirmDeleteEntry(kp, entry, ui);
     }
 
     /// <summary>
@@ -781,13 +781,13 @@ internal sealed class CommandExecutor(
     /// If already in the recycle bin, offers permanent deletion instead.
     /// Returns <c>true</c> if the entry was deleted/moved.
     /// </summary>
-    private static bool ConfirmDeleteEntry(KeePassService kp, PwEntry entry, IUserInteraction ui)
+    private static async Task<bool> ConfirmDeleteEntry(KeePassService kp, PwEntry entry, IUserInteraction ui)
     {
         string title = entry.Strings.ReadSafe(PwDefs.TitleField);
 
         if (kp.IsInRecycleBin(entry))
         {
-            if (!ui.Confirm($"Permanently delete '{title}'? This cannot be undone."))
+            if (!await ui.ConfirmAsync($"Permanently delete '{title}'? This cannot be undone."))
             {
                 ui.WriteLine("  Cancelled.");
                 return false;
@@ -797,7 +797,7 @@ internal sealed class CommandExecutor(
         }
         else
         {
-            if (!ui.Confirm($"Move '{title}' to recycle bin?"))
+            if (!await ui.ConfirmAsync($"Move '{title}' to recycle bin?"))
             {
                 ui.WriteLine("  Cancelled.");
                 return false;

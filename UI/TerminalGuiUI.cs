@@ -80,15 +80,9 @@ internal sealed class TerminalGuiUI : IUserInterface
         var  actualText   = new System.Text.StringBuilder();
         bool fieldSyncing = false;   // re-entrancy guard for TextChanged
 
-        // ── Black color scheme ────────────────────────────────────────────────
-        var blackScheme = new ColorScheme
-        {
-            Normal    = new Terminal.Gui.Attribute(Color.White,       Color.Black),
-            Focus     = new Terminal.Gui.Attribute(Color.White,       Color.Black),
-            HotNormal = new Terminal.Gui.Attribute(Color.BrightGreen, Color.Black),
-            HotFocus  = new Terminal.Gui.Attribute(Color.BrightGreen, Color.Black),
-            Disabled  = new Terminal.Gui.Attribute(Color.Gray,        Color.Black),
-        };
+        // ── Theme (loaded from theme.json; applied to every global scheme slot) ─
+        var scheme = TuiTheme.Load();
+        TuiTheme.ApplyGlobally(scheme);
 
         // ── Window ────────────────────────────────────────────────────────────
         var window = new Window
@@ -98,7 +92,7 @@ internal sealed class TerminalGuiUI : IUserInterface
             Y           = 0,
             Width       = Dim.Fill(),
             Height      = Dim.Fill(),
-            ColorScheme = blackScheme,
+            ColorScheme = scheme,
         };
 
         // ── Left side: Folders (top, larger) ─────────────────────────────────
@@ -332,6 +326,16 @@ internal sealed class TerminalGuiUI : IUserInterface
         // ── Input field key handling ──────────────────────────────────────────
         inputField.KeyDown += async (sender, key) =>
         {
+            // ── Ctrl+X : exit ─────────────────────────────────────────────────
+            if (key.KeyCode == (KeyCode.CtrlMask | KeyCode.X))
+            {
+                key.Handled = true;
+                bool cont = await executor.ExecuteAsync(CommandParser.Parse("exit"));
+                if (!cont)
+                    Application.Invoke(() => window.RequestStop());
+                return;
+            }
+
             // ── Ctrl+L : clear history ────────────────────────────────────────
             if (key.KeyCode == (KeyCode.CtrlMask | KeyCode.L))
             {
@@ -390,6 +394,18 @@ internal sealed class TerminalGuiUI : IUserInterface
                 LoadActual("");     // clear field
 
                 if (string.IsNullOrEmpty(text)) return;
+
+                // ── Pending confirmation (y/n answer) ─────────────────────────
+                if (interaction.IsPendingConfirmation)
+                {
+                    AppendHistory($"> {text}");
+                    string answer = text.ToLowerInvariant();
+                    if (answer is "y" or "yes" or "n" or "no")
+                        interaction.CompleteConfirmation(answer is "y" or "yes");
+                    else
+                        AppendHistory("[!] Please answer 'y' or 'n'.");
+                    return;
+                }
 
                 if (text.Equals("clear", StringComparison.OrdinalIgnoreCase))
                 {
@@ -499,6 +515,15 @@ internal sealed class TerminalGuiUI : IUserInterface
             inputField.SetFocus();
             return false; // run once only
         });
+
+        // Prevent Escape from closing the application.
+        // Terminal.Gui v2 binds Esc → RequestStop on Toplevel by default;
+        // handle it here before it reaches that binding.
+        window.KeyDown += (_, key) =>
+        {
+            if (key.KeyCode == KeyCode.Esc)
+                key.Handled = true;
+        };
 
         Application.Run(window);
         window.Dispose();

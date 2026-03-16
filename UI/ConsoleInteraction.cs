@@ -22,10 +22,11 @@ internal sealed class ConsoleInteraction : IUserInteraction
         return ConsoleHelper.ReadPassword();
     }
 
-    public bool Confirm(string question)
+    public Task<bool> ConfirmAsync(string question)
     {
-        Console.Write($"\n  {question} (y/n): ");
-        return Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true;
+        Console.Write($"\n  {question} [y/n]: ");
+        bool answer = Console.ReadLine()?.Trim().ToLowerInvariant() is "y" or "yes";
+        return Task.FromResult(answer);
     }
 
     public int PickFromList(string prompt, IReadOnlyList<string> items)

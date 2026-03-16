@@ -10,7 +10,7 @@ public interface IUserInteraction
     void   WriteError(string text);
     string Prompt(string message, string defaultValue = "");
     string ReadPassword(string prompt = "");
-    bool   Confirm(string question);
+    Task<bool> ConfirmAsync(string question);
 
     /// <summary>
     /// Presents a numbered list and returns the 1-based index of the chosen item,
