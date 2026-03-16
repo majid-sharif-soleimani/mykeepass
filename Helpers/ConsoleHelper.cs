@@ -4,38 +4,73 @@ namespace mykeepass.Helpers;
 public static class ConsoleHelper
 {
     /// <summary>
+    /// Reads a password from the console, echoing '*' for each character,
+    /// and returns it as a UTF-8 <see cref="byte"/> array.
+    ///
+    /// The intermediate <c>char[]</c> buffer is zero-filled before this method
+    /// returns, so the plaintext never lingers as a .NET <see cref="string"/>.
+    /// The <b>caller</b> is responsible for zero-filling the returned array after
+    /// use (e.g. with <see cref="Array.Clear"/>).
+    /// </summary>
+    public static byte[] ReadPasswordAsBytes()
+    {
+        // Pre-allocate a fixed char buffer — never converted to a string.
+        // 512 chars covers any realistic master password.
+        const int MaxLen = 512;
+        char[] chars = new char[MaxLen];
+        int length = 0;
+
+        try
+        {
+            while (true)
+            {
+                ConsoleKeyInfo key = Console.ReadKey(intercept: true);
+
+                if (key.Key == ConsoleKey.Enter)
+                    break;
+
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (length > 0)
+                    {
+                        chars[--length] = '\0';           // zero the removed char
+                        Console.Write("\b \b");
+                    }
+                }
+                else if (key.Key != ConsoleKey.Escape && length < MaxLen - 1)
+                {
+                    chars[length++] = key.KeyChar;
+                    Console.Write('*');
+                }
+            }
+
+            Console.WriteLine();
+            // Encode to UTF-8 bytes before clearing the char buffer.
+            return System.Text.Encoding.UTF8.GetBytes(chars, 0, length);
+        }
+        finally
+        {
+            // Zero-fill the entire char array regardless of how we exit.
+            Array.Clear(chars, 0, chars.Length);
+        }
+    }
+
+    /// <summary>
     /// Reads a password from the console, echoing '*' for each character.
-    /// The value is kept only in a local <see cref="System.Text.StringBuilder"/>
-    /// and is never written to disk.
+    /// Returns a plain <see cref="string"/>; prefer
+    /// <see cref="ReadPasswordAsBytes"/> when handling master passwords.
     /// </summary>
     public static string ReadPassword()
     {
-        var sb = new System.Text.StringBuilder();
-
-        while (true)
+        byte[] bytes = ReadPasswordAsBytes();
+        try
         {
-            ConsoleKeyInfo key = Console.ReadKey(intercept: true);
-
-            if (key.Key == ConsoleKey.Enter)
-                break;
-
-            if (key.Key == ConsoleKey.Backspace)
-            {
-                if (sb.Length > 0)
-                {
-                    sb.Remove(sb.Length - 1, 1);
-                    Console.Write("\b \b"); // erase the last '*' character
-                }
-            }
-            else if (key.Key != ConsoleKey.Escape)
-            {
-                sb.Append(key.KeyChar);
-                Console.Write('*');
-            }
+            return System.Text.Encoding.UTF8.GetString(bytes);
         }
-
-        Console.WriteLine();
-        return sb.ToString();
+        finally
+        {
+            Array.Clear(bytes, 0, bytes.Length);
+        }
     }
 
     /// <summary>

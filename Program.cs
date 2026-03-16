@@ -14,6 +14,8 @@
  * subsequent runs are fully silent.
  */
 
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using mykeepass.Helpers;
 using mykeepass.Models;
@@ -104,12 +106,16 @@ try
             return;
         }
 
-        string? storedPwd = WindowsHelloService.RetrievePassword(config.DatabaseName);
-        if (storedPwd is not null)
+        // Retrieve as bytes — the Windows API string stays local inside the method
+        // and becomes GC-eligible immediately.  We pin our byte array so the GC
+        // cannot move it (preventing stale copies at old heap addresses).
+        byte[]? storedBytes = WindowsHelloService.RetrievePasswordAsBytes(config.DatabaseName);
+        if (storedBytes is not null)
         {
+            var pin = GCHandle.Alloc(storedBytes, GCHandleType.Pinned);
             try
             {
-                ks = new KeePassService(dbStream, storedPwd);
+                ks = new KeePassService(dbStream, storedBytes);
                 Console.WriteLine("  ✓ Database unlocked via Windows Hello.\n");
             }
             catch (InvalidOperationException)
@@ -121,25 +127,53 @@ try
                 WindowsHelloService.RemoveStoredPassword(config.DatabaseName);
                 dbStream.Position = 0;
             }
+            finally
+            {
+                Array.Clear(storedBytes, 0, storedBytes.Length);   // zero the bytes
+                pin.Free();
+            }
         }
     }
 
     // ── 4b: Manual password entry (first run, or Hello path failed) ───────────
     if (ks is null)
     {
-        const int maxTries  = 3;
-        string?   successPwd = null;
+        const int maxTries = 3;
+        bool      offered  = false;   // track whether we still need to offer Hello
 
         for (int attempt = 1; attempt <= maxTries; attempt++)
         {
             Console.Write($"Master password (attempt {attempt}/{maxTries}): ");
-            string pwd = ConsoleHelper.ReadPassword();
 
+            // ReadPasswordAsBytes() never produces a string — chars are zero-filled
+            // inside the method before it returns.
+            byte[] pwdBytes = ConsoleHelper.ReadPasswordAsBytes();
+            var    pin      = GCHandle.Alloc(pwdBytes, GCHandleType.Pinned);
             try
             {
-                ks         = new KeePassService(dbStream, pwd);
-                successPwd = pwd;
-                break;
+                ks = new KeePassService(dbStream, pwdBytes);
+
+                Console.WriteLine("  ✓ Database unlocked.\n");
+
+                // Offer to save with Windows Hello for future logins.
+                if (helloAvailable && !offered
+                    && !WindowsHelloService.HasStoredPassword(config.DatabaseName))
+                {
+                    offered = true;
+                    Console.Write("  Save password with Windows Hello for future logins? [y/N]: ");
+                    string? answer = Console.ReadLine();
+                    if (answer?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        // PasswordVault requires a string — unavoidable Windows API
+                        // limitation.  The string is kept strictly local here.
+                        WindowsHelloService.StorePassword(
+                            config.DatabaseName,
+                            Encoding.UTF8.GetString(pwdBytes));
+                        Console.WriteLine("  ✓ Password saved to Windows Credential Vault.\n");
+                    }
+                }
+
+                break;  // success — exit the retry loop
             }
             catch (InvalidOperationException ex)
             {
@@ -160,24 +194,13 @@ try
 
                 dbStream.Position = 0;
             }
-        }
-
-        Console.WriteLine("  ✓ Database unlocked.\n");
-
-        // Offer to save with Windows Hello for next time.
-        if (helloAvailable && successPwd is not null
-            && !WindowsHelloService.HasStoredPassword(config.DatabaseName))
-        {
-            Console.Write("  Save password with Windows Hello for future logins? [y/N]: ");
-            string? answer = Console.ReadLine();
-            if (answer?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true)
+            finally
             {
-                WindowsHelloService.StorePassword(config.DatabaseName, successPwd);
-                Console.WriteLine("  ✓ Password saved to Windows Credential Vault.\n");
+                // Zero the bytes and release the pin regardless of success or failure.
+                Array.Clear(pwdBytes, 0, pwdBytes.Length);
+                pin.Free();
             }
         }
-        // Allow successPwd to be GC-eligible as soon as it's no longer needed.
-        successPwd = null;
     }
 
     keepass = ks!;

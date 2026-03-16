@@ -16,12 +16,29 @@ public sealed class KeePassService : IDisposable
     private readonly PwDatabase _db = new();
     private bool _modified;
 
-    // ── Constructor ───────────────────────────────────────────────────────────
+    // ── Constructors ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Opens the database using a UTF-8 password byte array.
+    /// The <b>caller</b> must zero-fill <paramref name="passwordUtf8"/> after
+    /// this constructor returns (success or failure).
+    /// KeePassLib copies the bytes internally and handles its own cleanup.
+    /// </summary>
+    public KeePassService(MemoryStream source, byte[] passwordUtf8)
+        => OpenDatabase(source, new KcpPassword(passwordUtf8));
+
+    /// <summary>
+    /// Opens the database using a plain-text password string.
+    /// Prefer the <c>byte[]</c> overload for new code so the caller can
+    /// zero-fill the buffer after use.
+    /// </summary>
     public KeePassService(MemoryStream source, string masterPassword)
+        => OpenDatabase(source, new KcpPassword(masterPassword));
+
+    private void OpenDatabase(MemoryStream source, KcpPassword password)
     {
         var key = new CompositeKey();
-        key.AddUserKey(new KcpPassword(masterPassword));
+        key.AddUserKey(password);
         _db.MasterKey = key;
 
         try

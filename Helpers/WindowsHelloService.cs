@@ -1,3 +1,4 @@
+using System.Text;
 using Windows.Security.Credentials;
 using Windows.Security.Credentials.UI;
 
@@ -71,7 +72,31 @@ internal static class WindowsHelloService
     }
 
     /// <summary>
-    /// Retrieves the stored master password. Returns null if not found.
+    /// Retrieves the stored master password as a UTF-8 byte array.
+    /// The Windows API string is kept local to this method and becomes
+    /// GC-eligible immediately on return.
+    /// The <b>caller</b> must zero-fill the returned array after use.
+    /// Returns <c>null</c> if no credential is found.
+    /// </summary>
+    public static byte[]? RetrievePasswordAsBytes(string databaseName)
+    {
+        try
+        {
+            var cred = new PasswordVault().Retrieve(VaultResource, databaseName);
+            cred.RetrievePassword();
+            // Convert to bytes immediately; the string becomes unreachable here.
+            return Encoding.UTF8.GetBytes(cred.Password);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Retrieves the stored master password as a plain string.
+    /// Prefer <see cref="RetrievePasswordAsBytes"/> for new code.
+    /// Returns <c>null</c> if no credential is found.
     /// </summary>
     public static string? RetrievePassword(string databaseName)
     {
