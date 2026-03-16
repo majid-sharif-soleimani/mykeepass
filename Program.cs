@@ -79,41 +79,98 @@ catch (Exception ex)
     return;
 }
 
-// ─── Step 4: Unlock the database (up to 3 password attempts) ──────────────────
+// ─── Step 4: Unlock the database ──────────────────────────────────────────────
 KeePassService keepass;
 try
 {
-    const int maxTries = 3;
-    KeePassService? ks = null;
+    bool helloAvailable = await WindowsHelloService.IsAvailableAsync();
+    KeePassService? ks  = null;
 
-    for (int attempt = 1; attempt <= maxTries; attempt++)
+    // ── 4a: Windows Hello path ────────────────────────────────────────────────
+    if (helloAvailable && WindowsHelloService.HasStoredPassword(config.DatabaseName))
     {
-        Console.Write($"Master password (attempt {attempt}/{maxTries}): ");
-        string pwd = ConsoleHelper.ReadPassword();
+        Console.WriteLine("Verifying identity with Windows Hello…");
+        bool verified = await WindowsHelloService.VerifyAsync(
+            "MyKeePass wants to open your password database.");
 
-        try
+        if (!verified)
         {
-            ks = new KeePassService(dbStream, pwd);
-            break;
+            Console.Error.WriteLine("  ✗ Windows Hello verification failed or was cancelled. Exiting.");
+            await dbStream.DisposeAsync();
+            driveService.Dispose();
+            return;
         }
-        catch (InvalidOperationException ex)
+
+        string? storedPwd = WindowsHelloService.RetrievePassword(config.DatabaseName);
+        if (storedPwd is not null)
         {
-            Console.Error.WriteLine($"  ✗ {ex.Message}");
-
-            if (attempt == maxTries)
+            try
             {
-                Console.Error.WriteLine("Too many failed attempts. Exiting.");
-                await dbStream.DisposeAsync();
-                driveService.Dispose();
-                return;
+                ks = new KeePassService(dbStream, storedPwd);
+                Console.WriteLine("  ✓ Database unlocked via Windows Hello.\n");
             }
+            catch (InvalidOperationException)
+            {
+                // Stored password is stale — clear it and fall through to manual entry.
+                Console.Error.WriteLine(
+                    "  ✗ Stored password is incorrect (master password may have changed).\n" +
+                    "  Please enter the current master password.");
+                WindowsHelloService.RemoveStoredPassword(config.DatabaseName);
+                dbStream.Position = 0;
+            }
+        }
+    }
 
-            dbStream.Position = 0;
+    // ── 4b: Manual password entry (first run, or Hello path failed) ───────────
+    if (ks is null)
+    {
+        const int maxTries  = 3;
+        string?   successPwd = null;
+
+        for (int attempt = 1; attempt <= maxTries; attempt++)
+        {
+            Console.Write($"Master password (attempt {attempt}/{maxTries}): ");
+            string pwd = ConsoleHelper.ReadPassword();
+
+            try
+            {
+                ks         = new KeePassService(dbStream, pwd);
+                successPwd = pwd;
+                break;
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine($"  ✗ {ex.Message}");
+
+                if (attempt == maxTries)
+                {
+                    Console.Error.WriteLine("Too many failed attempts. Exiting.");
+                    await dbStream.DisposeAsync();
+                    driveService.Dispose();
+                    return;
+                }
+
+                dbStream.Position = 0;
+            }
+        }
+
+        Console.WriteLine("  ✓ Database unlocked.\n");
+
+        // Offer to save with Windows Hello for next time.
+        if (helloAvailable && successPwd is not null
+            && !WindowsHelloService.HasStoredPassword(config.DatabaseName))
+        {
+            Console.Write("  Save password with Windows Hello for future logins? [y/N]: ");
+            string? answer = Console.ReadLine();
+            if (answer?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                WindowsHelloService.StorePassword(config.DatabaseName, successPwd);
+                Console.WriteLine("  ✓ Password saved to Windows Credential Vault.\n");
+            }
         }
     }
 
     keepass = ks!;
-    Console.WriteLine("  ✓ Database unlocked.\n");
 }
 catch (Exception ex)
 {
