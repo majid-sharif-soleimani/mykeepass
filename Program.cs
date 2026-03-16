@@ -20,6 +20,9 @@ using mykeepass.Models;
 using mykeepass.Services;
 using mykeepass.UI;
 
+// ─── Center the console window on screen ──────────────────────────────────────
+ConsoleWindowHelper.CenterOnScreen();
+
 // ─── Startup banner ───────────────────────────────────────────────────────────
 Console.WriteLine("══════════════════════════════════════════════");
 Console.WriteLine("  MyKeePass — Google Drive KeePass Manager   ");
