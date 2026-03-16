@@ -2,6 +2,7 @@ using KeePassLib;
 using mykeepass.Helpers;
 using mykeepass.Parsing;
 using mykeepass.Services;
+using mykeepass.UI;
 
 namespace mykeepass;
 
@@ -15,7 +16,8 @@ internal sealed class CommandExecutor(
     KeePassService     keepass,
     GoogleDriveService drive,
     string             fileId,
-    string             fileName)
+    string             fileName,
+    IUserInteraction   ui)
 {
     private PwGroup  _currentGroup = keepass.RootGroup;
     private PwEntry? _viewedEntry  = null;
@@ -25,6 +27,14 @@ internal sealed class CommandExecutor(
 
     /// <summary>The entry the user is currently inspecting, or <c>null</c> in folder view.</summary>
     public PwEntry? ViewedEntry  => _viewedEntry;
+
+    /// <summary>
+    /// Fired whenever navigation state changes (group entered/exited, entry opened/closed,
+    /// entry added or deleted). TUI subscribers use this to refresh the tree and help panel.
+    /// </summary>
+    public event Action? StateChanged;
+
+    private void NotifyStateChanged() => StateChanged?.Invoke();
 
     // ── Main dispatch ─────────────────────────────────────────────────────────
 
@@ -108,7 +118,7 @@ internal sealed class CommandExecutor(
                 return true;
 
             default:
-                Console.WriteLine("  Unknown command.");
+                ui.WriteLine("  Unknown command.");
                 return true;
         }
     }
@@ -120,29 +130,31 @@ internal sealed class CommandExecutor(
         if (_viewedEntry is not null)
         {
             _viewedEntry = null;
+            NotifyStateChanged();
         }
         else if (!ReferenceEquals(_currentGroup, keepass.RootGroup))
         {
             _currentGroup = _currentGroup.ParentGroup ?? keepass.RootGroup;
-            Console.WriteLine($"  Back to '{_currentGroup.Name}'.");
+            ui.WriteLine($"  Back to '{_currentGroup.Name}'.");
+            NotifyStateChanged();
         }
         else
         {
-            Console.WriteLine("  Already at root.");
+            ui.WriteLine("  Already at root.");
         }
     }
 
     private void HandleList()
     {
-        if (_viewedEntry is not null) { Console.WriteLine("  Unknown command."); return; }
-        keepass.ListGroup(_currentGroup);
+        if (_viewedEntry is not null) { ui.WriteLine("  Unknown command."); return; }
+        keepass.ListGroup(_currentGroup, ui);
     }
 
     private void HandleSelect(SelectCommand cmd)
     {
         if (_viewedEntry is not null)
         {
-            Console.WriteLine("  Type 'back' to exit the entry view first.");
+            ui.WriteLine("  Type 'back' to exit the entry view first.");
             return;
         }
 
@@ -150,46 +162,57 @@ internal sealed class CommandExecutor(
         {
             case SelectTarget.Auto:
             {
-                if (string.IsNullOrEmpty(cmd.Name)) { Console.WriteLine("  Specify a name."); return; }
+                if (string.IsNullOrEmpty(cmd.Name)) { ui.WriteLine("  Specify a name."); return; }
                 var matchFolder = keepass.FindChildGroup(_currentGroup, cmd.Name);
                 var matchEntry  = keepass.FindEntryInGroup(_currentGroup, cmd.Name);
 
                 if (matchFolder is null && matchEntry is null)
-                    Console.WriteLine($"  Nothing matching '{cmd.Name}' found in this folder.");
+                    ui.WriteLine($"  Nothing matching '{cmd.Name}' found in this folder.");
                 else if (matchFolder is not null && matchEntry is not null)
                 {
-                    Console.WriteLine($"  Ambiguous — both a folder and an entry match '{cmd.Name}':");
-                    Console.WriteLine($"    folder : {matchFolder.Name}");
-                    Console.WriteLine($"    entry  : {matchEntry.Strings.ReadSafe(PwDefs.TitleField)}");
-                    Console.WriteLine($"  Use 'select folder {cmd.Name}' or 'select entry {cmd.Name}' to disambiguate.");
+                    ui.WriteLine($"  Ambiguous — both a folder and an entry match '{cmd.Name}':");
+                    ui.WriteLine($"    folder : {matchFolder.Name}");
+                    ui.WriteLine($"    entry  : {matchEntry.Strings.ReadSafe(PwDefs.TitleField)}");
+                    ui.WriteLine($"  Use 'select folder {cmd.Name}' or 'select entry {cmd.Name}' to disambiguate.");
                 }
                 else if (matchFolder is not null)
                 {
                     _currentGroup = matchFolder;
-                    Console.WriteLine($"  Entered '{matchFolder.Name}'.");
+                    ui.WriteLine($"  Entered '{matchFolder.Name}'.");
+                    NotifyStateChanged();
                 }
                 else
                 {
                     _viewedEntry = matchEntry;
+                    NotifyStateChanged();
                 }
                 break;
             }
 
             case SelectTarget.Folder:
             {
-                if (string.IsNullOrEmpty(cmd.Name)) { Console.WriteLine("  Please specify a folder name."); return; }
+                if (string.IsNullOrEmpty(cmd.Name)) { ui.WriteLine("  Please specify a folder name."); return; }
                 var target = keepass.FindChildGroup(_currentGroup, cmd.Name);
-                if (target is null) Console.WriteLine($"  No subfolder matching '{cmd.Name}' found.");
-                else { _currentGroup = target; Console.WriteLine($"  Entered '{target.Name}'."); }
+                if (target is null) ui.WriteLine($"  No subfolder matching '{cmd.Name}' found.");
+                else
+                {
+                    _currentGroup = target;
+                    ui.WriteLine($"  Entered '{target.Name}'.");
+                    NotifyStateChanged();
+                }
                 break;
             }
 
             case SelectTarget.Entry:
             {
-                if (string.IsNullOrEmpty(cmd.Name)) { Console.WriteLine("  Please specify an entry name."); return; }
+                if (string.IsNullOrEmpty(cmd.Name)) { ui.WriteLine("  Please specify an entry name."); return; }
                 var target = keepass.FindEntryInGroup(_currentGroup, cmd.Name);
-                if (target is null) Console.WriteLine($"  No entry matching '{cmd.Name}' found.");
-                else _viewedEntry = target;
+                if (target is null) ui.WriteLine($"  No entry matching '{cmd.Name}' found.");
+                else
+                {
+                    _viewedEntry = target;
+                    NotifyStateChanged();
+                }
                 break;
             }
         }
@@ -199,41 +222,42 @@ internal sealed class CommandExecutor(
     {
         if (_viewedEntry is null)
         {
-            Console.WriteLine("  Open an entry first, then set its fields.");
-            Console.WriteLine("  e.g.: select gmail  →  set password to S3cr3t");
-            Console.WriteLine("  e.g.: select gmail  →  add password with value S3cr3t");
+            ui.WriteLine("  Open an entry first, then set its fields.");
+            ui.WriteLine("  e.g.: select gmail  →  set password to S3cr3t");
+            ui.WriteLine("  e.g.: select gmail  →  add password with value S3cr3t");
             return;
         }
 
         if (string.IsNullOrEmpty(cmd.Key))
         {
-            Console.WriteLine("  Field name cannot be empty.  e.g.: set password to S3cr3t");
+            ui.WriteLine("  Field name cannot be empty.  e.g.: set password to S3cr3t");
             return;
         }
 
         keepass.SetEntryField(_viewedEntry, cmd.Key, cmd.Value);
-        Console.WriteLine($"  ✓ '{cmd.Key}' set.");
+        ui.WriteLine($"  ✓ '{cmd.Key}' set.");
+        NotifyStateChanged();
     }
 
     private void HandleAttachFile(AttachFileCommand cmd)
     {
         if (_viewedEntry is null)
         {
-            Console.WriteLine("  Open an entry first, then set its fields from a file.");
-            Console.WriteLine("  e.g.: select gmail  →  set password to value from /path/to/secret.txt");
+            ui.WriteLine("  Open an entry first, then set its fields from a file.");
+            ui.WriteLine("  e.g.: select gmail  →  set password to value from /path/to/secret.txt");
             return;
         }
 
         if (string.IsNullOrEmpty(cmd.Key))
         {
-            Console.WriteLine("  Field name cannot be empty.");
+            ui.WriteLine("  Field name cannot be empty.");
             return;
         }
 
         string path = cmd.FilePath.Trim().Trim('"');
         if (!File.Exists(path))
         {
-            Console.WriteLine($"  File not found: '{path}'");
+            ui.WriteLine($"  File not found: '{path}'");
             return;
         }
 
@@ -241,11 +265,12 @@ internal sealed class CommandExecutor(
         {
             string contents = File.ReadAllText(path).TrimEnd('\r', '\n');
             keepass.SetEntryField(_viewedEntry, cmd.Key, contents);
-            Console.WriteLine($"  ✓ '{cmd.Key}' set from '{path}'.");
+            ui.WriteLine($"  ✓ '{cmd.Key}' set from '{path}'.");
+            NotifyStateChanged();
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"  ERROR: Could not read '{path}' — {ex.Message}");
+            ui.WriteError($"  ERROR: Could not read '{path}' — {ex.Message}");
         }
     }
 
@@ -255,9 +280,9 @@ internal sealed class CommandExecutor(
         {
             // Entry view: copy from the currently viewed entry.
             if (cmd.Field is not null)
-                CopyNamedFieldFromEntry(keepass, _viewedEntry, cmd.Field);
+                CopyNamedFieldFromEntry(keepass, _viewedEntry, cmd.Field, ui);
             else
-                CopyAttributeFromEntry(keepass, _viewedEntry);
+                CopyAttributeFromEntry(keepass, _viewedEntry, ui);
         }
         else
         {
@@ -265,17 +290,17 @@ internal sealed class CommandExecutor(
             if (cmd.Field is not null && cmd.FromEntry is not null)
             {
                 var entry = keepass.FindEntryInGroup(_currentGroup, cmd.FromEntry);
-                if (entry is null) Console.WriteLine($"  No entry matching '{cmd.FromEntry}' found.");
-                else               CopyNamedFieldFromEntry(keepass, entry, cmd.Field);
+                if (entry is null) ui.WriteLine($"  No entry matching '{cmd.FromEntry}' found.");
+                else               CopyNamedFieldFromEntry(keepass, entry, cmd.Field, ui);
             }
             else if (cmd.Field is not null)
             {
-                Console.WriteLine("  Usage: copy <field> from <entry>   e.g.: copy password from gmail");
-                Console.WriteLine("  Or use bare 'copy' for interactive selection.");
+                ui.WriteLine("  Usage: copy <field> from <entry>   e.g.: copy password from gmail");
+                ui.WriteLine("  Or use bare 'copy' for interactive selection.");
             }
             else
             {
-                CopyAttribute(keepass, _currentGroup);
+                CopyAttribute(keepass, _currentGroup, ui);
             }
         }
     }
@@ -288,52 +313,58 @@ internal sealed class CommandExecutor(
             {
                 // Entry view with a name: delete that specific field.
                 if (keepass.ResolveFieldAlias(cmd.Name) == PwDefs.TitleField)
-                { Console.WriteLine("  Title is required and cannot be deleted."); return; }
+                { ui.WriteLine("  Title is required and cannot be deleted."); return; }
 
                 if (!keepass.RemoveEntryField(_viewedEntry, cmd.Name))
-                    Console.WriteLine($"  Field '{cmd.Name}' not found.");
+                    ui.WriteLine($"  Field '{cmd.Name}' not found.");
                 else
-                    Console.WriteLine($"  ✓ Field '{cmd.Name}' removed.");
+                {
+                    ui.WriteLine($"  ✓ Field '{cmd.Name}' removed.");
+                    NotifyStateChanged();
+                }
             }
             else
             {
                 // Entry view, no name: delete the entry itself.
-                if (ConfirmDeleteEntry(keepass, _viewedEntry))
+                if (ConfirmDeleteEntry(keepass, _viewedEntry, ui))
+                {
                     _viewedEntry = null;
+                    NotifyStateChanged();
+                }
             }
         }
         else if (cmd.Name is not null)
         {
-            DeleteEntryByName(keepass, _currentGroup, cmd.Name);
+            DeleteEntryByName(keepass, _currentGroup, cmd.Name, ui);
         }
         else
         {
-            DeleteEntry(keepass, _currentGroup);
+            DeleteEntry(keepass, _currentGroup, ui);
         }
     }
 
     private void HandleDeleteFolder(DeleteFolderCommand cmd)
     {
-        if (_viewedEntry is not null) { Console.WriteLine("  Unknown command."); return; }
+        if (_viewedEntry is not null) { ui.WriteLine("  Unknown command."); return; }
 
         var group = keepass.FindChildGroup(_currentGroup, cmd.Name);
-        if (group is null) { Console.WriteLine($"  No folder matching '{cmd.Name}' found."); return; }
+        if (group is null) { ui.WriteLine($"  No folder matching '{cmd.Name}' found."); return; }
 
         if (keepass.IsGroupInRecycleBin(group))
         {
-            Console.Write($"\n  Permanently delete folder '{group.Name}' and all its contents? This cannot be undone. (y/n): ");
-            if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) != true)
-            { Console.WriteLine("  Cancelled."); return; }
+            if (!ui.Confirm($"Permanently delete folder '{group.Name}' and all its contents? This cannot be undone."))
+            { ui.WriteLine("  Cancelled."); return; }
             keepass.DeleteGroup(group);
-            Console.WriteLine($"  ✓ Folder '{group.Name}' permanently deleted.");
+            ui.WriteLine($"  ✓ Folder '{group.Name}' permanently deleted.");
+            NotifyStateChanged();
         }
         else
         {
-            Console.Write($"\n  Move folder '{group.Name}' to recycle bin? (y/n): ");
-            if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) != true)
-            { Console.WriteLine("  Cancelled."); return; }
+            if (!ui.Confirm($"Move folder '{group.Name}' to recycle bin?"))
+            { ui.WriteLine("  Cancelled."); return; }
             keepass.MoveGroupToRecycleBin(group);
-            Console.WriteLine($"  ✓ Folder '{group.Name}' moved to recycle bin.");
+            ui.WriteLine($"  ✓ Folder '{group.Name}' moved to recycle bin.");
+            NotifyStateChanged();
         }
     }
 
@@ -346,28 +377,30 @@ internal sealed class CommandExecutor(
         else
         {
             dest = keepass.FindGroup(destName);
-            if (dest is null) { Console.WriteLine($"  No folder matching '{destName}' found."); return; }
+            if (dest is null) { ui.WriteLine($"  No folder matching '{destName}' found."); return; }
         }
 
         if (_viewedEntry is not null)
         {
             // Entry view: "move to <dest>" relocates the current entry.
-            if (cmd.Name is not null) { Console.WriteLine("  Unknown command."); return; }
+            if (cmd.Name is not null) { ui.WriteLine("  Unknown command."); return; }
             string title = _viewedEntry.Strings.ReadSafe(PwDefs.TitleField);
             keepass.MoveEntryToGroup(_viewedEntry, dest);
-            Console.WriteLine($"  ✓ '{title}' moved to '{dest.Name}'.");
+            ui.WriteLine($"  ✓ '{title}' moved to '{dest.Name}'.");
             _viewedEntry = null;
+            NotifyStateChanged();
             return;
         }
 
         if (cmd.IsFolder)
         {
             var group = keepass.FindChildGroup(_currentGroup, cmd.Name!);
-            if (group is null) { Console.WriteLine($"  No folder matching '{cmd.Name}' found."); return; }
+            if (group is null) { ui.WriteLine($"  No folder matching '{cmd.Name}' found."); return; }
             if (KeePassService.WouldCreateCycle(group, dest))
-            { Console.WriteLine("  Cannot move a folder into itself or one of its subfolders."); return; }
+            { ui.WriteLine("  Cannot move a folder into itself or one of its subfolders."); return; }
             keepass.MoveGroupToGroup(group, dest);
-            Console.WriteLine($"  ✓ Folder '{group.Name}' moved to '{dest.Name}'.");
+            ui.WriteLine($"  ✓ Folder '{group.Name}' moved to '{dest.Name}'.");
+            NotifyStateChanged();
             return;
         }
 
@@ -376,29 +409,31 @@ internal sealed class CommandExecutor(
         if (entry is not null)
         {
             keepass.MoveEntryToGroup(entry, dest);
-            Console.WriteLine($"  ✓ '{entry.Strings.ReadSafe(PwDefs.TitleField)}' moved to '{dest.Name}'.");
+            ui.WriteLine($"  ✓ '{entry.Strings.ReadSafe(PwDefs.TitleField)}' moved to '{dest.Name}'.");
+            NotifyStateChanged();
             return;
         }
 
         var subgroup = keepass.FindChildGroup(_currentGroup, cmd.Name!);
-        if (subgroup is null) { Console.WriteLine($"  Nothing matching '{cmd.Name}' found."); return; }
+        if (subgroup is null) { ui.WriteLine($"  Nothing matching '{cmd.Name}' found."); return; }
         if (KeePassService.WouldCreateCycle(subgroup, dest))
-        { Console.WriteLine("  Cannot move a folder into itself or one of its subfolders."); return; }
+        { ui.WriteLine("  Cannot move a folder into itself or one of its subfolders."); return; }
         keepass.MoveGroupToGroup(subgroup, dest);
-        Console.WriteLine($"  ✓ Folder '{subgroup.Name}' moved to '{dest.Name}'.");
+        ui.WriteLine($"  ✓ Folder '{subgroup.Name}' moved to '{dest.Name}'.");
+        NotifyStateChanged();
     }
 
     private void HandleRename(RenameCommand cmd)
     {
         string newName = cmd.NewName.Trim();
-        if (string.IsNullOrEmpty(newName)) { Console.WriteLine("  New name cannot be empty."); return; }
+        if (string.IsNullOrEmpty(newName)) { ui.WriteLine("  New name cannot be empty."); return; }
 
         if (_viewedEntry is not null)
         {
             // Entry view: rename the entry's title.
             string oldTitle = _viewedEntry.Strings.ReadSafe(PwDefs.TitleField);
             keepass.SetEntryField(_viewedEntry, PwDefs.TitleField, newName);
-            Console.WriteLine($"  ✓ Renamed '{oldTitle}' → '{newName}'.");
+            ui.WriteLine($"  ✓ Renamed '{oldTitle}' → '{newName}'.");
             return;
         }
 
@@ -407,17 +442,19 @@ internal sealed class CommandExecutor(
             // Rename the current folder.
             string oldName = _currentGroup.Name;
             keepass.RenameGroup(_currentGroup, newName);
-            Console.WriteLine($"  ✓ Renamed folder '{oldName}' → '{newName}'.");
+            ui.WriteLine($"  ✓ Renamed folder '{oldName}' → '{newName}'.");
+            NotifyStateChanged();
             return;
         }
 
         if (cmd.IsFolder)
         {
             var group = keepass.FindChildGroup(_currentGroup, cmd.Name);
-            if (group is null) { Console.WriteLine($"  No folder matching '{cmd.Name}' found."); return; }
+            if (group is null) { ui.WriteLine($"  No folder matching '{cmd.Name}' found."); return; }
             string old = group.Name;
             keepass.RenameGroup(group, newName);
-            Console.WriteLine($"  ✓ Renamed folder '{old}' → '{newName}'.");
+            ui.WriteLine($"  ✓ Renamed folder '{old}' → '{newName}'.");
+            NotifyStateChanged();
             return;
         }
 
@@ -427,15 +464,16 @@ internal sealed class CommandExecutor(
         {
             string old = namedEntry.Strings.ReadSafe(PwDefs.TitleField);
             keepass.SetEntryField(namedEntry, PwDefs.TitleField, newName);
-            Console.WriteLine($"  ✓ Renamed '{old}' → '{newName}'.");
+            ui.WriteLine($"  ✓ Renamed '{old}' → '{newName}'.");
             return;
         }
 
         var namedGroup = keepass.FindChildGroup(_currentGroup, cmd.Name);
-        if (namedGroup is null) { Console.WriteLine($"  Nothing matching '{cmd.Name}' found."); return; }
+        if (namedGroup is null) { ui.WriteLine($"  Nothing matching '{cmd.Name}' found."); return; }
         string oldFolderName = namedGroup.Name;
         keepass.RenameGroup(namedGroup, newName);
-        Console.WriteLine($"  ✓ Renamed folder '{oldFolderName}' → '{newName}'.");
+        ui.WriteLine($"  ✓ Renamed folder '{oldFolderName}' → '{newName}'.");
+        NotifyStateChanged();
     }
 
     private void HandleEdit(EditCommand cmd)
@@ -443,65 +481,71 @@ internal sealed class CommandExecutor(
         if (_viewedEntry is not null)
         {
             // Entry view: edit the currently viewed entry.
-            EditViewedEntry(keepass, _viewedEntry);
+            EditViewedEntry(keepass, _viewedEntry, ui);
         }
         else if (cmd.Name is not null)
         {
             var entry = keepass.FindEntryInGroup(_currentGroup, cmd.Name);
             if (entry is null)
-                Console.WriteLine($"  No entry matching '{cmd.Name}' found.");
+                ui.WriteLine($"  No entry matching '{cmd.Name}' found.");
             else
             {
                 _viewedEntry = entry;
-                EditViewedEntry(keepass, entry);
+                EditViewedEntry(keepass, entry, ui);
+                NotifyStateChanged();
             }
         }
         else
         {
-            EditEntry(keepass, _currentGroup);
+            EditEntry(keepass, _currentGroup, ui);
         }
     }
 
     private void HandleAddEntry(AddEntryCommand cmd)
     {
-        if (_viewedEntry is not null) { Console.WriteLine("  Unknown command."); return; }
+        if (_viewedEntry is not null) { ui.WriteLine("  Unknown command."); return; }
 
         if (cmd.Name is not null)
         {
             _viewedEntry = keepass.AddQuickEntry(_currentGroup, cmd.Name);
-            Console.WriteLine($"  ✓ Entry '{cmd.Name}' created. Use 'set <field> to <val>' to fill in fields.");
+            ui.WriteLine($"  ✓ Entry '{cmd.Name}' created. Use 'set <field> to <val>' to fill in fields.");
+            NotifyStateChanged();
         }
         else
         {
-            AddEntry(keepass, _currentGroup);
+            AddEntry(keepass, _currentGroup, ui);
+            NotifyStateChanged();
         }
     }
 
     private void HandleAddFolder(AddFolderCommand cmd)
     {
-        if (_viewedEntry is not null) { Console.WriteLine("  Unknown command."); return; }
+        if (_viewedEntry is not null) { ui.WriteLine("  Unknown command."); return; }
 
-        string name = cmd.Name ?? ConsoleHelper.Prompt("\nFolder name").Trim();
-        if (string.IsNullOrEmpty(name)) { Console.WriteLine("  Folder name cannot be empty."); return; }
+        string name = cmd.Name ?? ui.Prompt("\nFolder name").Trim();
+        if (string.IsNullOrEmpty(name)) { ui.WriteLine("  Folder name cannot be empty."); return; }
 
         if (keepass.CreateGroup(_currentGroup, name))
-            Console.WriteLine($"  ✓ Folder '{name}' created.");
+        {
+            ui.WriteLine($"  ✓ Folder '{name}' created.");
+            NotifyStateChanged();
+        }
         else
-            Console.WriteLine($"  A folder named '{name}' already exists here.");
+            ui.WriteLine($"  A folder named '{name}' already exists here.");
     }
 
     private void HandleSearch(SearchCommand cmd)
     {
-        if (_viewedEntry is not null) { Console.WriteLine("  Unknown command."); return; }
-        SearchEntries(keepass, _currentGroup, cmd.Term ?? "");
+        if (_viewedEntry is not null) { ui.WriteLine("  Unknown command."); return; }
+        SearchEntries(keepass, _currentGroup, ui, cmd.Term ?? "");
     }
 
     private void PrintUnknown(UnknownCommand _)
     {
         if (_viewedEntry is not null)
-            Console.WriteLine("  Unknown command.");
+            ui.WriteLine("  Unknown command.");
         else
-            Console.WriteLine("  Unknown command. Type 'list' to see folder contents.");
+            ui.WriteLine("  Unknown command. Type 'list' to see folder contents.");
     }
 
     // ── Save / upload ─────────────────────────────────────────────────────────
@@ -510,7 +554,7 @@ internal sealed class CommandExecutor(
     {
         if (!keepass.IsModified)
         {
-            Console.WriteLine("  Nothing to save — no changes since last upload.");
+            ui.WriteLine("  Nothing to save — no changes since last upload.");
             return;
         }
         await UploadChangesAsync();
@@ -520,32 +564,31 @@ internal sealed class CommandExecutor(
     {
         if (!keepass.IsModified) return;
 
-        Console.Write("\nYou have unsaved changes. Upload to Google Drive? (y/n): ");
-        if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) == true)
+        if (ui.Confirm("You have unsaved changes. Upload to Google Drive?"))
             await UploadChangesAsync();
     }
 
     private async Task UploadChangesAsync()
     {
-        Console.WriteLine("\nSerialising database…");
+        ui.WriteLine("\nSerialising database…");
         MemoryStream? updated = keepass.SaveToStream();
 
         if (updated is null)
         {
-            Console.WriteLine("  Nothing to upload (no changes were detected).");
+            ui.WriteLine("  Nothing to upload (no changes were detected).");
             return;
         }
 
-        Console.WriteLine($"Uploading '{fileName}' ({updated.Length:N0} bytes) to Google Drive…");
+        ui.WriteLine($"Uploading '{fileName}' ({updated.Length:N0} bytes) to Google Drive…");
         try
         {
             await drive.UploadFileAsync(fileId, fileName, updated);
-            Console.WriteLine($"  ✓ '{fileName}' uploaded successfully.");
+            ui.WriteLine($"  ✓ '{fileName}' uploaded successfully.");
             keepass.MarkSaved();
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"  ERROR: Upload failed — {ex.Message}");
+            ui.WriteError($"  ERROR: Upload failed — {ex.Message}");
         }
         finally
         {
@@ -553,63 +596,59 @@ internal sealed class CommandExecutor(
         }
     }
 
-    // ── Static display / UI helpers (moved verbatim from Program.cs) ──────────
+    // ── Static display / UI helpers ───────────────────────────────────────────
 
-    /// <summary>Prints all fields of <paramref name="entry"/> to the console.</summary>
-    internal static void ShowEntry(KeePassService kp, PwEntry entry)
+    /// <summary>Prints all fields of <paramref name="entry"/> via <paramref name="ui"/>.</summary>
+    internal static void ShowEntry(KeePassService kp, PwEntry entry, IUserInteraction ui)
     {
         var fields = kp.GetEntryFields(entry);
-        Console.WriteLine();
+        ui.WriteLine();
         foreach (var (name, value, isProtected, isCustom) in fields)
         {
             string display = isProtected ? "●●●●●●●●" : value;
             string tag     = isCustom    ? " [custom]" : string.Empty;
-            Console.WriteLine($"  {name,-16}: {display}{tag}");
+            ui.WriteLine($"  {name,-16}: {display}{tag}");
         }
     }
 
     /// <summary>Interactively creates a new entry (all fields prompted).</summary>
-    private static void AddEntry(KeePassService kp, PwGroup targetGroup)
+    private static void AddEntry(KeePassService kp, PwGroup targetGroup, IUserInteraction ui)
     {
-        Console.WriteLine();
+        ui.WriteLine();
 
         string title;
         do
         {
-            title = ConsoleHelper.Prompt("Title").Trim();
+            title = ui.Prompt("Title").Trim();
             if (string.IsNullOrEmpty(title))
-                Console.WriteLine("  Title cannot be empty.");
+                ui.WriteLine("  Title cannot be empty.");
         }
         while (string.IsNullOrEmpty(title));
 
-        string? username = NullIfEmpty(ConsoleHelper.Prompt("Username (Enter to skip)"));
-        string? url      = NullIfEmpty(ConsoleHelper.Prompt("Website  (Enter to skip)"));
-        string? notes    = NullIfEmpty(ConsoleHelper.Prompt("Notes    (Enter to skip)"));
-
-        Console.Write("Password (Enter to skip): ");
-        string? password = NullIfEmpty(ConsoleHelper.ReadPassword());
+        string? username = NullIfEmpty(ui.Prompt("Username (Enter to skip)"));
+        string? url      = NullIfEmpty(ui.Prompt("Website  (Enter to skip)"));
+        string? notes    = NullIfEmpty(ui.Prompt("Notes    (Enter to skip)"));
+        string? password = NullIfEmpty(ui.ReadPassword("Password (Enter to skip): "));
 
         var customFields = new List<(string Key, string Value)>();
-        Console.WriteLine("\n  Custom fields (all values are protected). Leave key blank to finish.");
+        ui.WriteLine("\n  Custom fields (all values are protected). Leave key blank to finish.");
         while (true)
         {
-            string key = ConsoleHelper.Prompt("  Key").Trim();
+            string key = ui.Prompt("  Key").Trim();
             if (string.IsNullOrEmpty(key)) break;
-
-            Console.Write("  Value (hidden): ");
-            string value = ConsoleHelper.ReadPassword();
+            string value = ui.ReadPassword("  Value (hidden): ");
             customFields.Add((key, value));
         }
 
         kp.AddEntryTo(targetGroup, title, username, password, url, notes, customFields);
-        Console.WriteLine($"\n  ✓ Entry '{title}' added to '{targetGroup.Name}'.");
+        ui.WriteLine($"\n  ✓ Entry '{title}' added to '{targetGroup.Name}'.");
     }
 
     /// <summary>
     /// Copies a named field (case-insensitive key match) from <paramref name="entry"/>
     /// to the clipboard using the secure clipboard helper.
     /// </summary>
-    private static void CopyNamedFieldFromEntry(KeePassService kp, PwEntry entry, string fieldKey)
+    private static void CopyNamedFieldFromEntry(KeePassService kp, PwEntry entry, string fieldKey, IUserInteraction ui)
     {
         var fields = kp.GetEntryFields(entry);
         int idx = -1;
@@ -619,86 +658,86 @@ internal sealed class CommandExecutor(
 
         if (idx < 0)
         {
-            Console.WriteLine($"  Field '{fieldKey}' not found.");
+            ui.WriteLine($"  Field '{fieldKey}' not found.");
             if (fields.Count > 0)
-                Console.WriteLine($"  Available: {string.Join(", ", fields.Select(f => f.Name))}");
+                ui.WriteLine($"  Available: {string.Join(", ", fields.Select(f => f.Name))}");
             return;
         }
 
         ClipboardHelper.SetSecureText(fields[idx].Value);
-        Console.WriteLine($"  ✓ '{fields[idx].Name}' copied. Clipboard clears in 60 s.");
+        ui.WriteLine($"  ✓ '{fields[idx].Name}' copied. Clipboard clears in 60 s.");
     }
 
     /// <summary>
     /// Interactive: shows fields of <paramref name="entry"/>, lets the user pick one,
     /// and copies it to the clipboard.
     /// </summary>
-    private static void CopyAttributeFromEntry(KeePassService kp, PwEntry entry)
+    private static void CopyAttributeFromEntry(KeePassService kp, PwEntry entry, IUserInteraction ui)
     {
         var fields = kp.GetEntryFields(entry);
-        if (fields.Count == 0) { Console.WriteLine("  Entry has no fields."); return; }
+        if (fields.Count == 0) { ui.WriteLine("  Entry has no fields."); return; }
 
-        Console.WriteLine($"\n  Fields in '{entry.Strings.ReadSafe(PwDefs.TitleField)}':");
-        for (int i = 0; i < fields.Count; i++)
+        var items = fields.Select(f =>
         {
-            string display = fields[i].IsProtected ? "●●●●●●●●" : fields[i].Value;
-            string tag     = fields[i].IsCustom    ? " [custom]" : string.Empty;
-            Console.WriteLine($"    [{i + 1}] {fields[i].Name,-16}: {display}{tag}");
-        }
+            string display = f.IsProtected ? "●●●●●●●●" : f.Value;
+            string tag     = f.IsCustom    ? " [custom]" : string.Empty;
+            return $"{f.Name,-16}: {display}{tag}";
+        }).ToList();
 
-        Console.Write($"\nField to copy (1–{fields.Count}): ");
-        if (!int.TryParse(Console.ReadLine(), out int fieldNum)
-            || fieldNum < 1 || fieldNum > fields.Count)
+        ui.WriteLine($"\n  Fields in '{entry.Strings.ReadSafe(PwDefs.TitleField)}':");
+        int choice = ui.PickFromList($"Field to copy", items);
+        if (choice < 1)
         {
-            Console.WriteLine("  Invalid number — nothing copied.");
+            ui.WriteLine("  Nothing copied.");
             return;
         }
 
-        var chosen = fields[fieldNum - 1];
+        var chosen = fields[choice - 1];
         ClipboardHelper.SetSecureText(chosen.Value);
-        Console.WriteLine($"  ✓ '{chosen.Name}' copied. Clipboard clears in 60 s.");
+        ui.WriteLine($"  ✓ '{chosen.Name}' copied. Clipboard clears in 60 s.");
     }
 
     /// <summary>
     /// Interactive: lists entries in <paramref name="scope"/>, lets the user pick one,
     /// then copy a field.
     /// </summary>
-    private static void CopyAttribute(KeePassService kp, PwGroup scope)
+    private static void CopyAttribute(KeePassService kp, PwGroup scope, IUserInteraction ui)
     {
         var entries = kp.GetEntries(scope);
-        if (entries.Count == 0) { Console.WriteLine("  No entries in this folder."); return; }
+        if (entries.Count == 0) { ui.WriteLine("  No entries in this folder."); return; }
 
-        kp.ListGroup(scope);
+        kp.ListGroup(scope, ui);
 
-        Console.Write($"\nEntry number to copy from (1–{entries.Count}): ");
-        if (!int.TryParse(Console.ReadLine(), out int num) || num < 1 || num > entries.Count)
+        var items = entries.Select(e => e.Strings.ReadSafe(PwDefs.TitleField)).ToList();
+        int choice = ui.PickFromList($"Entry to copy from", items);
+        if (choice < 1)
         {
-            Console.WriteLine("  Invalid number — nothing copied.");
+            ui.WriteLine("  Nothing copied.");
             return;
         }
 
-        CopyAttributeFromEntry(kp, entries[num - 1]);
+        CopyAttributeFromEntry(kp, entries[choice - 1], ui);
     }
 
     /// <summary>
     /// Searches entries within <paramref name="scope"/>.
     /// If <paramref name="term"/> is empty the user is prompted for it.
     /// </summary>
-    private static void SearchEntries(KeePassService kp, PwGroup scope, string term = "")
+    private static void SearchEntries(KeePassService kp, PwGroup scope, IUserInteraction ui, string term = "")
     {
         if (string.IsNullOrEmpty(term))
-            term = ConsoleHelper.Prompt("\nSearch").Trim();
-        if (string.IsNullOrEmpty(term)) { Console.WriteLine("  Empty search term."); return; }
+            term = ui.Prompt("\nSearch").Trim();
+        if (string.IsNullOrEmpty(term)) { ui.WriteLine("  Empty search term."); return; }
 
         var results = kp.Search(term, scope);
 
-        if (results.Count == 0) { Console.WriteLine($"  No entries matched '{term}'."); return; }
+        if (results.Count == 0) { ui.WriteLine($"  No entries matched '{term}'."); return; }
 
-        Console.WriteLine($"\n  {results.Count} match{(results.Count == 1 ? "" : "es")} for '{term}':");
+        ui.WriteLine($"\n  {results.Count} match{(results.Count == 1 ? "" : "es")} for '{term}':");
         foreach (var (index, entry, folder) in results)
         {
             string tag = string.IsNullOrEmpty(folder) ? "" : $"  ({folder})";
-            Console.WriteLine($"  [{index:D2}] {entry.Strings.ReadSafe(PwDefs.TitleField)}{tag}");
+            ui.WriteLine($"  [{index:D2}] {entry.Strings.ReadSafe(PwDefs.TitleField)}{tag}");
         }
     }
 
@@ -706,29 +745,30 @@ internal sealed class CommandExecutor(
     /// Interactive: lists entries, asks the user to pick one by number, then
     /// moves the chosen entry to the recycle bin (or permanently deletes if already in bin).
     /// </summary>
-    private static void DeleteEntry(KeePassService kp, PwGroup scope)
+    private static void DeleteEntry(KeePassService kp, PwGroup scope, IUserInteraction ui)
     {
         var entries = kp.GetEntries(scope);
-        if (entries.Count == 0) { Console.WriteLine("  No entries in this folder."); return; }
+        if (entries.Count == 0) { ui.WriteLine("  No entries in this folder."); return; }
 
-        kp.ListGroup(scope);
+        kp.ListGroup(scope, ui);
 
-        Console.Write($"\nEntry number to delete (1–{entries.Count}): ");
-        if (!int.TryParse(Console.ReadLine(), out int num) || num < 1 || num > entries.Count)
+        var items = entries.Select(e => e.Strings.ReadSafe(PwDefs.TitleField)).ToList();
+        int choice = ui.PickFromList("Entry number to delete", items);
+        if (choice < 1)
         {
-            Console.WriteLine("  Invalid number — nothing deleted.");
+            ui.WriteLine("  Nothing deleted.");
             return;
         }
 
-        ConfirmDeleteEntry(kp, entries[num - 1]);
+        ConfirmDeleteEntry(kp, entries[choice - 1], ui);
     }
 
     /// <summary>Finds an entry by name prefix and passes it to <see cref="ConfirmDeleteEntry"/>.</summary>
-    private static void DeleteEntryByName(KeePassService kp, PwGroup scope, string prefix)
+    private static void DeleteEntryByName(KeePassService kp, PwGroup scope, string prefix, IUserInteraction ui)
     {
         var entry = kp.FindEntryInGroup(scope, prefix);
-        if (entry is null) { Console.WriteLine($"  No entry matching '{prefix}' found."); return; }
-        ConfirmDeleteEntry(kp, entry);
+        if (entry is null) { ui.WriteLine($"  No entry matching '{prefix}' found."); return; }
+        ConfirmDeleteEntry(kp, entry, ui);
     }
 
     /// <summary>
@@ -736,78 +776,75 @@ internal sealed class CommandExecutor(
     /// If already in the recycle bin, offers permanent deletion instead.
     /// Returns <c>true</c> if the entry was deleted/moved.
     /// </summary>
-    private static bool ConfirmDeleteEntry(KeePassService kp, PwEntry entry)
+    private static bool ConfirmDeleteEntry(KeePassService kp, PwEntry entry, IUserInteraction ui)
     {
         string title = entry.Strings.ReadSafe(PwDefs.TitleField);
 
         if (kp.IsInRecycleBin(entry))
         {
-            Console.Write($"\n  Permanently delete '{title}'? This cannot be undone. (y/n): ");
-            if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) != true)
+            if (!ui.Confirm($"Permanently delete '{title}'? This cannot be undone."))
             {
-                Console.WriteLine("  Cancelled.");
+                ui.WriteLine("  Cancelled.");
                 return false;
             }
             kp.DeleteEntry(entry);
-            Console.WriteLine($"  ✓ '{title}' permanently deleted.");
+            ui.WriteLine($"  ✓ '{title}' permanently deleted.");
         }
         else
         {
-            Console.Write($"\n  Move '{title}' to recycle bin? (y/n): ");
-            if (Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) != true)
+            if (!ui.Confirm($"Move '{title}' to recycle bin?"))
             {
-                Console.WriteLine("  Cancelled.");
+                ui.WriteLine("  Cancelled.");
                 return false;
             }
             kp.MoveToRecycleBin(entry);
-            Console.WriteLine($"  ✓ '{title}' moved to recycle bin.");
+            ui.WriteLine($"  ✓ '{title}' moved to recycle bin.");
         }
 
         return true;
     }
 
     /// <summary>Interactive: lists entries, lets the user pick one by number, then edits it.</summary>
-    private static void EditEntry(KeePassService kp, PwGroup scope)
+    private static void EditEntry(KeePassService kp, PwGroup scope, IUserInteraction ui)
     {
         var entries = kp.GetEntries(scope);
-        if (entries.Count == 0) { Console.WriteLine("  No entries to edit."); return; }
+        if (entries.Count == 0) { ui.WriteLine("  No entries to edit."); return; }
 
-        kp.ListGroup(scope);
+        kp.ListGroup(scope, ui);
 
-        Console.Write($"\nEntry number to edit (1–{entries.Count}): ");
-        if (!int.TryParse(Console.ReadLine(), out int num) || num < 1 || num > entries.Count)
+        var items = entries.Select(e => e.Strings.ReadSafe(PwDefs.TitleField)).ToList();
+        int choice = ui.PickFromList("Entry number to edit", items);
+        if (choice < 1)
         {
-            Console.WriteLine("  Invalid number — no changes made.");
+            ui.WriteLine("  No changes made.");
             return;
         }
 
-        EditViewedEntry(kp, entries[num - 1]);
+        EditViewedEntry(kp, entries[choice - 1], ui);
     }
 
     /// <summary>
     /// Prompts the user to update each field of <paramref name="entry"/>.
     /// Pressing Enter on a field keeps its current value.
     /// </summary>
-    private static void EditViewedEntry(KeePassService kp, PwEntry entry)
+    private static void EditViewedEntry(KeePassService kp, PwEntry entry, IUserInteraction ui)
     {
         string curTitle    = entry.Strings.ReadSafe(PwDefs.TitleField);
         string curUsername = entry.Strings.ReadSafe(PwDefs.UserNameField);
         string curUrl      = entry.Strings.ReadSafe(PwDefs.UrlField);
         string curNotes    = entry.Strings.ReadSafe(PwDefs.NotesField);
 
-        Console.WriteLine($"\nEditing: {curTitle}");
-        Console.WriteLine("  (Press Enter on any field to keep the current value)\n");
+        ui.WriteLine($"\nEditing: {curTitle}");
+        ui.WriteLine("  (Press Enter on any field to keep the current value)\n");
 
-        string? title    = NullIfEmpty(ConsoleHelper.Prompt("Title",    curTitle));
-        string? username = NullIfEmpty(ConsoleHelper.Prompt("Username", curUsername));
-        string? url      = NullIfEmpty(ConsoleHelper.Prompt("URL",      curUrl));
-        string? notes    = NullIfEmpty(ConsoleHelper.Prompt("Notes",    curNotes));
-
-        Console.Write("New password (Enter = keep current): ");
-        string? password = NullIfEmpty(ConsoleHelper.ReadPassword());
+        string? title    = NullIfEmpty(ui.Prompt("Title",    curTitle));
+        string? username = NullIfEmpty(ui.Prompt("Username", curUsername));
+        string? url      = NullIfEmpty(ui.Prompt("URL",      curUrl));
+        string? notes    = NullIfEmpty(ui.Prompt("Notes",    curNotes));
+        string? password = NullIfEmpty(ui.ReadPassword("New password (Enter = keep current): "));
 
         kp.UpdateEntry(entry, title, username, password, url, notes);
-        Console.WriteLine("\n  ✓ Entry updated in memory.");
+        ui.WriteLine("\n  ✓ Entry updated in memory.");
     }
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;

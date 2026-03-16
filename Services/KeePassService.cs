@@ -2,6 +2,7 @@ using KeePassLib;
 using KeePassLib.Keys;
 using KeePassLib.Security;
 using KeePassLib.Serialization;
+using mykeepass.UI;
 using System.Linq;
 
 namespace mykeepass.Services;
@@ -117,35 +118,35 @@ public sealed class KeePassService : IDisposable
     // ── Display ───────────────────────────────────────────────────────────────
 
     /// <summary>Prints the full database tree.</summary>
-    public void ListAllEntries() => PrintGroupTree(_db.RootGroup, isRoot: true);
+    public void ListAllEntries(IUserInteraction ui) => PrintGroupTree(_db.RootGroup, isRoot: true, ui);
 
     /// <summary>Prints the tree rooted at <paramref name="group"/>.</summary>
-    public void ListGroup(PwGroup group) => PrintGroupTree(group, isRoot: false);
+    public void ListGroup(PwGroup group, IUserInteraction ui) => PrintGroupTree(group, isRoot: false, ui);
 
-    private void PrintGroupTree(PwGroup group, bool isRoot)
+    private void PrintGroupTree(PwGroup group, bool isRoot, IUserInteraction ui)
     {
         int total = GetEntries(group).Count;
 
-        Console.WriteLine();
-        Console.WriteLine("══════════════════════════════════════════════");
-        Console.WriteLine(isRoot
+        ui.WriteLine();
+        ui.WriteLine("══════════════════════════════════════════════");
+        ui.WriteLine(isRoot
             ? $"  {total} entr{(total == 1 ? "y" : "ies")} found"
             : $"  {total} entr{(total == 1 ? "y" : "ies")} in '{group.Name}'");
-        Console.WriteLine("══════════════════════════════════════════════\n");
+        ui.WriteLine("══════════════════════════════════════════════\n");
 
         if (total == 0 && group.Groups.UCount == 0)
         {
-            Console.WriteLine("  (empty)");
+            ui.WriteLine("  (empty)");
             return;
         }
 
-        Console.WriteLine($"  ▷ {group.Name}");
+        ui.WriteLine($"  ▷ {group.Name}");
         int index = 1;
-        PrintTree(group, ref index, prefix: "  ");
-        Console.WriteLine();
+        PrintTree(group, ref index, prefix: "  ", ui);
+        ui.WriteLine();
     }
 
-    private static void PrintTree(PwGroup group, ref int index, string prefix)
+    private static void PrintTree(PwGroup group, ref int index, string prefix, IUserInteraction ui)
     {
         var entries   = group.Entries.Cast<PwEntry>().ToList();
         var subgroups = group.Groups .Cast<PwGroup>() .ToList();
@@ -157,7 +158,7 @@ public sealed class KeePassService : IDisposable
             bool   last  = ++pos == total;
             string conn  = last ? "└── " : "├── ";
             string title = entry.Strings.ReadSafe(PwDefs.TitleField);
-            Console.WriteLine($"{prefix}{conn}◇ [{index++:D2}] {title}");
+            ui.WriteLine($"{prefix}{conn}◇ [{index++:D2}] {title}");
         }
 
         foreach (var sub in subgroups)
@@ -165,8 +166,8 @@ public sealed class KeePassService : IDisposable
             bool   last = ++pos == total;
             string conn = last ? "└── " : "├── ";
             string ext  = last ? "    " : "│   ";
-            Console.WriteLine($"{prefix}{conn}▷ {sub.Name}");
-            PrintTree(sub, ref index, prefix + ext);
+            ui.WriteLine($"{prefix}{conn}▷ {sub.Name}");
+            PrintTree(sub, ref index, prefix + ext, ui);
         }
     }
 

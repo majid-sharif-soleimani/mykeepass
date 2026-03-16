@@ -24,6 +24,8 @@
     <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
     <!-- ANTLR4 build-time code generation — no external Java required -->
     <PackageReference Include="Antlr4BuildTasks"        Version="12.8.0" />
+    <!-- Terminal.Gui TUI framework -->
+    <PackageReference Include="Terminal.Gui"            Version="2.*"    />
   </ItemGroup>
 
   <ItemGroup>
