@@ -35,6 +35,7 @@ public sealed class GoogleDriveService : IDisposable
     /// </param>
     public static async Task<GoogleDriveService> CreateAsync(
         string credentialsPath,
+        string accountEmail,
         CancellationToken ct = default)
     {
         // Step: Load OAuth2 client_id and client_secret from the downloaded JSON.
@@ -44,7 +45,7 @@ public sealed class GoogleDriveService : IDisposable
         UserCredential credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
             GoogleClientSecrets.FromStream(stream).Secrets,
             Scopes,
-            user: "user",                           // key used to look up the cached token
+            user: accountEmail,                     // key used to look up the cached token
             taskCancellationToken: ct,
             dataStore: new FileDataStore("MyKeePass") // token persisted in %AppData%\MyKeePass
         );

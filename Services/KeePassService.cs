@@ -24,21 +24,39 @@ public sealed class KeePassService : IDisposable
     /// this constructor returns (success or failure).
     /// KeePassLib copies the bytes internally and handles its own cleanup.
     /// </summary>
-    public KeePassService(MemoryStream source, byte[] passwordUtf8)
-        => OpenDatabase(source, new KcpPassword(passwordUtf8));
+    public KeePassService(MemoryStream source, byte[] passwordUtf8, MemoryStream? keyFileStream = null)
+        => OpenDatabase(source, new KcpPassword(passwordUtf8), keyFileStream);
 
     /// <summary>
     /// Opens the database using a plain-text password string.
     /// Prefer the <c>byte[]</c> overload for new code so the caller can
     /// zero-fill the buffer after use.
     /// </summary>
-    public KeePassService(MemoryStream source, string masterPassword)
-        => OpenDatabase(source, new KcpPassword(masterPassword));
+    public KeePassService(MemoryStream source, string masterPassword, MemoryStream? keyFileStream = null)
+        => OpenDatabase(source, new KcpPassword(masterPassword), keyFileStream);
 
-    private void OpenDatabase(MemoryStream source, KcpPassword password)
+    private void OpenDatabase(MemoryStream source, KcpPassword password, MemoryStream? keyFileStream = null)
     {
         var key = new CompositeKey();
         key.AddUserKey(password);
+
+        if (keyFileStream is not null)
+        {
+            // KcpKeyFile requires a file path; write to a temp file, add the key, then delete it.
+            // KeePassLib reads only the key material from the file — no sensitive database content.
+            string tempPath = Path.GetTempFileName();
+            try
+            {
+                using (var fs = File.Create(tempPath))
+                    keyFileStream.CopyTo(fs);
+                key.AddUserKey(new KcpKeyFile(tempPath));
+            }
+            finally
+            {
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+            }
+        }
+
         _db.MasterKey = key;
 
         try
@@ -55,7 +73,7 @@ public sealed class KeePassService : IDisposable
             _db.Close();
             throw new InvalidOperationException(
                 "Could not open the database. " +
-                "The master password may be wrong, or the file may be corrupt. " +
+                "The master password or key file may be wrong, or the file may be corrupt. " +
                 $"({ex.Message})", ex);
         }
     }

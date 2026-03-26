@@ -17,6 +17,9 @@ internal static class WindowsHelloService
 {
     private const string VaultResource = "MyKeePass";
 
+    private static string VaultKey(string accountEmail, string databaseName) =>
+        $"{accountEmail}:{databaseName}";
+
     // ── IUserConsentVerifierInterop ────────────────────────────────────────────
     // Win32 apps must use this COM interop interface instead of the plain WinRT
     // static method so they can pass an owner HWND.  Windows then shows the
@@ -146,13 +149,14 @@ internal static class WindowsHelloService
 
     /// <summary>
     /// Returns true when a master password for <paramref name="databaseName"/>
-    /// is already stored in the Windows Credential Vault.
+    /// under <paramref name="accountEmail"/> is already stored in the Windows
+    /// Credential Vault.
     /// </summary>
-    public static bool HasStoredPassword(string databaseName)
+    public static bool HasStoredPassword(string accountEmail, string databaseName)
     {
         try
         {
-            new PasswordVault().Retrieve(VaultResource, databaseName);
+            new PasswordVault().Retrieve(VaultResource, VaultKey(accountEmail, databaseName));
             return true;
         }
         catch
@@ -168,11 +172,11 @@ internal static class WindowsHelloService
     /// The <b>caller</b> must zero-fill the returned array after use.
     /// Returns <c>null</c> if no credential is found.
     /// </summary>
-    public static byte[]? RetrievePasswordAsBytes(string databaseName)
+    public static byte[]? RetrievePasswordAsBytes(string accountEmail, string databaseName)
     {
         try
         {
-            var cred = new PasswordVault().Retrieve(VaultResource, databaseName);
+            var cred = new PasswordVault().Retrieve(VaultResource, VaultKey(accountEmail, databaseName));
             cred.RetrievePassword();
             // Convert to bytes immediately; the string becomes unreachable here.
             return Encoding.UTF8.GetBytes(cred.Password);
@@ -188,11 +192,11 @@ internal static class WindowsHelloService
     /// Prefer <see cref="RetrievePasswordAsBytes"/> for new code.
     /// Returns <c>null</c> if no credential is found.
     /// </summary>
-    public static string? RetrievePassword(string databaseName)
+    public static string? RetrievePassword(string accountEmail, string databaseName)
     {
         try
         {
-            var cred = new PasswordVault().Retrieve(VaultResource, databaseName);
+            var cred = new PasswordVault().Retrieve(VaultResource, VaultKey(accountEmail, databaseName));
             cred.RetrievePassword();
             return cred.Password;
         }
@@ -206,14 +210,15 @@ internal static class WindowsHelloService
     /// Saves (or overwrites) the master password in the Windows Credential Vault.
     /// The vault is DPAPI-protected — only the current Windows user can read it.
     /// </summary>
-    public static void StorePassword(string databaseName, string password)
+    public static void StorePassword(string accountEmail, string databaseName, string password)
     {
         try
         {
             var vault = new PasswordVault();
+            string key = VaultKey(accountEmail, databaseName);
             // Remove any stale entry first so we don't accumulate duplicates.
-            try { vault.Remove(vault.Retrieve(VaultResource, databaseName)); } catch { }
-            vault.Add(new PasswordCredential(VaultResource, databaseName, password));
+            try { vault.Remove(vault.Retrieve(VaultResource, key)); } catch { }
+            vault.Add(new PasswordCredential(VaultResource, key, password));
         }
         catch
         {
@@ -222,16 +227,17 @@ internal static class WindowsHelloService
     }
 
     /// <summary>
-    /// Deletes any stored credential for <paramref name="databaseName"/>.
-    /// Called when the stored password turns out to be wrong (e.g. user changed
-    /// the master password) so we don't loop forever with bad credentials.
+    /// Deletes any stored credential for <paramref name="databaseName"/> under
+    /// <paramref name="accountEmail"/>. Called when the stored password turns out
+    /// to be wrong (e.g. user changed the master password) so we don't loop
+    /// forever with bad credentials.
     /// </summary>
-    public static void RemoveStoredPassword(string databaseName)
+    public static void RemoveStoredPassword(string accountEmail, string databaseName)
     {
         try
         {
             var vault = new PasswordVault();
-            vault.Remove(vault.Retrieve(VaultResource, databaseName));
+            vault.Remove(vault.Retrieve(VaultResource, VaultKey(accountEmail, databaseName)));
         }
         catch { }
     }
