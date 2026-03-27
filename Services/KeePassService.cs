@@ -2,6 +2,7 @@ using KeePassLib;
 using KeePassLib.Keys;
 using KeePassLib.Security;
 using KeePassLib.Serialization;
+using mykeepass.Helpers;
 using mykeepass.UI;
 using System.Linq;
 
@@ -166,7 +167,7 @@ public sealed class KeePassService : IDisposable
         ui.WriteLine("══════════════════════════════════════════════");
         ui.WriteLine(isRoot
             ? $"  {total} entr{(total == 1 ? "y" : "ies")} found"
-            : $"  {total} entr{(total == 1 ? "y" : "ies")} in '{group.Name}'");
+            : $"  {total} entr{(total == 1 ? "y" : "ies")} in '{ConsoleHelper.RtlDisplay(group.Name)}'");
         ui.WriteLine("══════════════════════════════════════════════\n");
 
         if (total == 0 && group.Groups.UCount == 0)
@@ -175,7 +176,7 @@ public sealed class KeePassService : IDisposable
             return;
         }
 
-        ui.WriteLine($"  ▷ {group.Name}");
+        ui.WriteLine($"  ▷ {ConsoleHelper.RtlDisplay(group.Name)}");
         int index = 1;
         PrintTree(group, ref index, prefix: "  ", ui);
         ui.WriteLine();
@@ -193,7 +194,7 @@ public sealed class KeePassService : IDisposable
             bool   last  = ++pos == total;
             string conn  = last ? "└── " : "├── ";
             string title = entry.Strings.ReadSafe(PwDefs.TitleField);
-            ui.WriteLine($"{prefix}{conn}◇ [{index++:D2}] {title}");
+            ui.WriteLine($"{prefix}{conn}◇ [{index++:D2}] {ConsoleHelper.RtlDisplay(title)}");
         }
 
         foreach (var sub in subgroups)
@@ -201,7 +202,7 @@ public sealed class KeePassService : IDisposable
             bool   last = ++pos == total;
             string conn = last ? "└── " : "├── ";
             string ext  = last ? "    " : "│   ";
-            ui.WriteLine($"{prefix}{conn}▷ {sub.Name}");
+            ui.WriteLine($"{prefix}{conn}▷ {ConsoleHelper.RtlDisplay(sub.Name)}");
             PrintTree(sub, ref index, prefix + ext, ui);
         }
     }

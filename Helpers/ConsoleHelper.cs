@@ -74,6 +74,27 @@ public static class ConsoleHelper
     }
 
     /// <summary>
+    /// Reverses a string that contains Persian/Arabic (RTL) characters so it
+    /// displays correctly in terminals and UI frameworks that lack BiDi support.
+    /// Returns the string unchanged if no RTL characters are detected.
+    /// </summary>
+    public static string RtlDisplay(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        foreach (char c in text)
+        {
+            // Arabic/Persian Unicode block: U+0600–U+06FF
+            if (c >= '\u0600' && c <= '\u06FF')
+            {
+                var chars = text.ToCharArray();
+                Array.Reverse(chars);
+                return new string(chars);
+            }
+        }
+        return text;
+    }
+
+    /// <summary>
     /// Writes <paramref name="message"/> and returns the trimmed user input.
     /// If the user presses Enter with no input, <paramref name="defaultValue"/> is returned.
     /// </summary>

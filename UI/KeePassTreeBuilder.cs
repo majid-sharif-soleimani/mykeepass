@@ -1,4 +1,5 @@
 using KeePassLib;
+using mykeepass.Helpers;
 using Terminal.Gui;
 
 namespace mykeepass.UI;
@@ -29,16 +30,16 @@ public sealed class KeePassTreeNode
     public override string ToString()
     {
         if (Group is not null)
-            return $"▷ {Group.Name}";
+            return $"▷ {ConsoleHelper.RtlDisplay(Group.Name)}";
 
         if (Entry is not null)
-            return $"◇ {Entry.Strings.ReadSafe(PwDefs.TitleField)}";
+            return $"◇ {ConsoleHelper.RtlDisplay(Entry.Strings.ReadSafe(PwDefs.TitleField))}";
 
         if (AttributeKey is not null)
         {
             string val = AttributeValue ?? "";
             if (val.Length > 40) val = val[..40] + "…";
-            return $"  {AttributeKey}: {val}";
+            return $"  {ConsoleHelper.RtlDisplay(AttributeKey)}: {val}";
         }
 
         return "?";
