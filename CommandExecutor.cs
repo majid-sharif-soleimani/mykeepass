@@ -669,8 +669,7 @@ internal sealed class CommandExecutor(
             return;
         }
 
-        ClipboardHelper.SetSecureText(fields[idx].Value);
-        ui.WriteLine($"  ✓ '{fields[idx].Name}' copied. Clipboard clears in 60 s.");
+        CopyFieldToClipboard(fields[idx].Name, fields[idx].Value, ui);
     }
 
     /// <summary>
@@ -698,8 +697,20 @@ internal sealed class CommandExecutor(
         }
 
         var chosen = fields[choice - 1];
-        ClipboardHelper.SetSecureText(chosen.Value);
-        ui.WriteLine($"  ✓ '{chosen.Name}' copied. Clipboard clears in 60 s.");
+        CopyFieldToClipboard(chosen.Name, chosen.Value, ui);
+    }
+
+    private static void CopyFieldToClipboard(string fieldName, string value, IUserInteraction ui)
+    {
+        try
+        {
+            ClipboardHelper.SetSecureText(value);
+            ui.WriteLine($"  ✓ '{fieldName}' copied. Clipboard clears in 60 s.");
+        }
+        catch (ClipboardUnavailableException ex)
+        {
+            ui.WriteLine($"  ✗ {ex.Message}");
+        }
     }
 
     /// <summary>

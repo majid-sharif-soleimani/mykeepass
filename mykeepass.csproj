@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>mykeepass</RootNamespace>
@@ -25,7 +25,7 @@
     <!-- ANTLR4 build-time code generation — no external Java required -->
     <PackageReference Include="Antlr4BuildTasks"        Version="12.8.0" />
     <!-- Terminal.Gui TUI framework -->
-    <PackageReference Include="Terminal.Gui"            Version="2.*"    />
+    <PackageReference Include="Terminal.Gui"            Version="2.1.0" />
   </ItemGroup>
 
   <ItemGroup>

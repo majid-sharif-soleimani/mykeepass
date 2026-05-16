@@ -1,4 +1,6 @@
-using Terminal.Gui;  // Application.Invoke, Dialog, Label, TextField, Button, ListView
+using Terminal.Gui.App;
+using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
 
 namespace mykeepass.UI;
 
@@ -138,7 +140,7 @@ internal sealed class TerminalGuiInteraction(Action<string> appendHistory) : IUs
         var okBtn = new Button { Text = "OK" };
         okBtn.Accepting += (_, _) =>
         {
-            result = listView.SelectedItem + 1;
+            result = listView.SelectedItem is int selectedItem ? selectedItem + 1 : -1;
             dialog.RequestStop();
         };
 

@@ -1,7 +1,10 @@
 using KeePassLib;
 using mykeepass.Parsing;
 using mykeepass.Services;
-using Terminal.Gui;
+using Terminal.Gui.App;
+using Terminal.Gui.Drivers;
+using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
 
 namespace mykeepass.UI;
 
@@ -92,7 +95,7 @@ internal sealed class TerminalGuiUI : IUserInterface
             Y           = 0,
             Width       = Dim.Fill(),
             Height      = Dim.Fill(),
-            ColorScheme = scheme,
+            SchemeName  = TuiTheme.SchemeName,
         };
 
         // ── Left side: Folders (top, larger) ─────────────────────────────────
@@ -180,9 +183,9 @@ internal sealed class TerminalGuiUI : IUserInterface
         window.Add(leftPanel, commandsFrame, historyFrame, inputPrompt, inputField);
 
         // ── Double-click on tree node → execute the equivalent select command ──
-        treeView.ObjectActivated += async (_, e) =>
+        treeView.Accepted += async (_, _) =>
         {
-            if (e.ActivatedObject is not { } node) return;
+            if (treeView.SelectedObject is not { } node) return;
 
             string? commandText =
                 node.IsGroup && node.Group is { } g
@@ -297,7 +300,7 @@ internal sealed class TerminalGuiUI : IUserInterface
             {
                 string d = GetDisplayText();
                 inputField.Text           = d;
-                inputField.CursorPosition = newCursor < 0
+                inputField.InsertionPoint = newCursor < 0
                     ? d.Length
                     : Math.Min(newCursor, d.Length);
             }
@@ -352,7 +355,7 @@ internal sealed class TerminalGuiUI : IUserInterface
                 {
                     // Strip line breaks — common in copied API keys/passwords
                     clip = clip.Replace("\r\n", "").Replace("\r", "").Replace("\n", "");
-                    int    pos     = inputField.CursorPosition;
+                    int    pos     = inputField.InsertionPoint;
                     string current = actualText.ToString();
                     actualText.Clear();
                     actualText.Append(current[..pos] + clip + current[pos..]);
@@ -440,7 +443,7 @@ internal sealed class TerminalGuiUI : IUserInterface
             // ── Backspace : delete char before cursor ─────────────────────────
             if (key.KeyCode == KeyCode.Backspace)
             {
-                int pos = inputField.CursorPosition;
+                int pos = inputField.InsertionPoint;
                 if (pos > 0 && ConsoleUI.ValueStartIndex(actualText.ToString()) >= 0)
                 {
                     // In value mode — handle manually so TextField never sees
@@ -457,7 +460,7 @@ internal sealed class TerminalGuiUI : IUserInterface
             // ── Delete : delete char at cursor ────────────────────────────────
             if (key.KeyCode == KeyCode.Delete)
             {
-                int pos = inputField.CursorPosition;
+                int pos = inputField.InsertionPoint;
                 string s = actualText.ToString();
                 if (pos < s.Length && ConsoleUI.ValueStartIndex(s) >= 0)
                 {
@@ -472,7 +475,7 @@ internal sealed class TerminalGuiUI : IUserInterface
             // ── Printable character ───────────────────────────────────────────
             if (key.AsRune.Value > 0)
             {
-                int    pos         = inputField.CursorPosition;
+                int    pos         = inputField.InsertionPoint;
                 string current     = actualText.ToString();
                 string rune        = key.AsRune.ToString();
                 string hypothetical = current[..pos] + rune + current[pos..];

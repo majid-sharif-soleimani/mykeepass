@@ -1,5 +1,6 @@
 using System.Text.Json;
-using Terminal.Gui;
+using Terminal.Gui.Configuration;
+using Terminal.Gui.Drawing;
 
 namespace mykeepass.UI;
 
@@ -16,6 +17,8 @@ namespace mykeepass.UI;
 /// </summary>
 internal static class TuiTheme
 {
+    public const string SchemeName = "mykeepass";
+
     // ── JSON model ────────────────────────────────────────────────────────────
 
     private sealed class ColorPair
@@ -30,6 +33,8 @@ internal static class TuiTheme
         public ColorPair? Focus     { get; init; }
         public ColorPair? HotNormal { get; init; }
         public ColorPair? HotFocus  { get; init; }
+        public ColorPair? Editable  { get; init; }
+        public ColorPair? ReadOnly  { get; init; }
         public ColorPair? Disabled  { get; init; }
     }
 
@@ -44,7 +49,7 @@ internal static class TuiTheme
     /// Reads <c>theme.json</c> from the application directory.
     /// Falls back to the built-in dark theme if the file is absent or invalid.
     /// </summary>
-    public static ColorScheme Load(string fileName = "theme.json")
+    public static Scheme Load(string fileName = "theme.json")
     {
         try
         {
@@ -68,39 +73,45 @@ internal static class TuiTheme
     /// the same palette without needing per-widget assignments.
     /// Must be called after <see cref="Application.Init"/>.
     /// </summary>
-    public static void ApplyGlobally(ColorScheme scheme)
+    public static void ApplyGlobally(Scheme scheme)
     {
-        foreach (var key in Colors.ColorSchemes.Keys.ToArray())
-            Colors.ColorSchemes[key] = scheme;
+        if (SchemeManager.TryGetScheme(SchemeName, out _))
+            SchemeManager.RemoveScheme(SchemeName);
+
+        SchemeManager.AddScheme(SchemeName, scheme);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static ColorScheme Build(ThemeFile tf) => new()
+    private static Scheme Build(ThemeFile tf) => new()
     {
         Normal    = Attr(tf.Normal,    "White",       "Black"),
         Focus     = Attr(tf.Focus,     "White",       "Black"),
         HotNormal = Attr(tf.HotNormal, "BrightGreen", "Black"),
         HotFocus  = Attr(tf.HotFocus,  "BrightGreen", "Black"),
+        Editable  = Attr(tf.Editable,  "White",       "Black"),
+        ReadOnly  = Attr(tf.ReadOnly,  "White",       "Black"),
         Disabled  = Attr(tf.Disabled,  "Gray",        "Black"),
     };
 
-    private static Terminal.Gui.Attribute Attr(
+    private static Terminal.Gui.Drawing.Attribute Attr(
         ColorPair? pair, string fallbackFg, string fallbackBg) =>
         new(ParseColor(pair?.Foreground, fallbackFg),
             ParseColor(pair?.Background, fallbackBg));
 
     private static Color ParseColor(string? name, string fallback) =>
-        Enum.TryParse<Color>(name,     ignoreCase: true, out var c) ? c :
-        Enum.TryParse<Color>(fallback, ignoreCase: true, out var d) ? d :
+        Color.TryParse(name ?? fallback, out var c) ? c ?? Color.White :
+        Color.TryParse(fallback, out var d) ? d ?? Color.White :
         Color.White;
 
-    private static ColorScheme Default() => new()
+    private static Scheme Default() => new()
     {
-        Normal    = new Terminal.Gui.Attribute(Color.White,       Color.Black),
-        Focus     = new Terminal.Gui.Attribute(Color.White,       Color.Black),
-        HotNormal = new Terminal.Gui.Attribute(Color.BrightGreen, Color.Black),
-        HotFocus  = new Terminal.Gui.Attribute(Color.BrightGreen, Color.Black),
-        Disabled  = new Terminal.Gui.Attribute(Color.Gray,        Color.Black),
+        Normal    = new Terminal.Gui.Drawing.Attribute(Color.White,       Color.Black),
+        Focus     = new Terminal.Gui.Drawing.Attribute(Color.White,       Color.Black),
+        HotNormal = new Terminal.Gui.Drawing.Attribute(Color.BrightGreen, Color.Black),
+        HotFocus  = new Terminal.Gui.Drawing.Attribute(Color.BrightGreen, Color.Black),
+        Editable  = new Terminal.Gui.Drawing.Attribute(Color.White,       Color.Black),
+        ReadOnly  = new Terminal.Gui.Drawing.Attribute(Color.White,       Color.Black),
+        Disabled  = new Terminal.Gui.Drawing.Attribute(Color.Gray,        Color.Black),
     };
 }

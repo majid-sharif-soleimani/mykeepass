@@ -34,6 +34,8 @@ internal static class ConsoleWindowHelper
     /// </summary>
     public static void CenterOnScreen()
     {
+        if (!OperatingSystem.IsWindows()) return;
+
         IntPtr hWnd = GetConsoleWindow();
         if (hWnd == IntPtr.Zero) return;
 
@@ -60,6 +62,8 @@ internal static class ConsoleWindowHelper
     /// </summary>
     public static IntPtr GetHandle()
     {
+        if (!OperatingSystem.IsWindows()) return IntPtr.Zero;
+
         IntPtr hwnd = GetForegroundWindow();
         if (hwnd != IntPtr.Zero) return hwnd;
         return GetConsoleWindow();

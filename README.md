@@ -209,6 +209,12 @@ Copied values are:
 - **Automatically cleared after 60 seconds**
 - **Cleared on app exit**
 
+On Linux, clipboard support requires one of:
+- `wl-clipboard` (`wl-copy`) for Wayland sessions
+- `xclip` or `xsel` for X11 sessions
+
+On macOS, clipboard support uses the built-in `pbcopy`.
+
 ---
 
 ## Example workflow
@@ -257,7 +263,7 @@ mykeepass/
 │   ├── CommandVisitor.cs       # Parse-tree visitor → typed ICommand
 │   └── CommandParser.cs        # Static Parse() entry point
 ├── Helpers/
-│   ├── ClipboardHelper.cs      # Secure clipboard (Win32 P/Invoke + 60s auto-clear)
+│   ├── ClipboardHelper.cs      # Secure clipboard (Win32 + Linux/macOS backends + 60s auto-clear)
 │   └── ConsoleHelper.cs        # Password masking, prompt helper
 ├── Models/
 │   └── AppConfig.cs            # appsettings.json model

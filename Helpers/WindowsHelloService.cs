@@ -1,3 +1,4 @@
+#if WINDOWS
 using System.Runtime.InteropServices;
 using System.Text;
 using Windows.Foundation;
@@ -242,3 +243,28 @@ internal static class WindowsHelloService
         catch { }
     }
 }
+#else
+namespace mykeepass.Helpers;
+
+internal static class WindowsHelloService
+{
+    public static Task<bool> IsAvailableAsync() => Task.FromResult(false);
+
+    public static Task<bool> VerifyAsync(IntPtr ownerHwnd, string message) =>
+        Task.FromResult(false);
+
+    public static bool HasStoredPassword(string accountEmail, string databaseName) => false;
+
+    public static byte[]? RetrievePasswordAsBytes(string accountEmail, string databaseName) => null;
+
+    public static string? RetrievePassword(string accountEmail, string databaseName) => null;
+
+    public static void StorePassword(string accountEmail, string databaseName, string password)
+    {
+    }
+
+    public static void RemoveStoredPassword(string accountEmail, string databaseName)
+    {
+    }
+}
+#endif

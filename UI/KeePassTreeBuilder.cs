@@ -1,6 +1,7 @@
 using KeePassLib;
 using mykeepass.Helpers;
 using Terminal.Gui;
+using Terminal.Gui.Views;
 
 namespace mykeepass.UI;
 

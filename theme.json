@@ -5,5 +5,7 @@
   "Focus":     { "Foreground": "White",       "Background": "Black" },
   "HotNormal": { "Foreground": "BrightGreen", "Background": "Black" },
   "HotFocus":  { "Foreground": "BrightGreen", "Background": "Black" },
+  "Editable":  { "Foreground": "White",       "Background": "Black" },
+  "ReadOnly":  { "Foreground": "White",       "Background": "Black" },
   "Disabled":  { "Foreground": "Gray",        "Background": "Black" }
 }
